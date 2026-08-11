@@ -8,10 +8,9 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { coreBridge } from "./core-bridge";
 import { getDb } from "./database";
-import { getActiveAccount, getMicrosoftRefreshToken } from "./accounts";
+import { getActiveAccount, resolveMinecraftSession } from "./accounts";
 import { detectJava } from "./java";
 import { librariesDir, assetsDir, versionsDir } from "../filesystem/paths";
-import { refreshMsaToken, completeMinecraftLogin } from "../auth/microsoft";
 import { getFabricVersionDetail } from "./fabric";
 import { installForge } from "./forge";
 
@@ -185,23 +184,7 @@ async function resolveJavaPath(instanceJavaPath: string | null, recommendedMajor
 async function resolveAccountForLaunch() {
   const account = getActiveAccount();
   if (!account) throw new Error("No active account. Add a Microsoft account or offline profile first.");
-
-  if (account.kind === "offline") {
-    return { username: account.username, uuid: account.uuid, accessToken: "", userType: "legacy" };
-  }
-
-  const refreshToken = await getMicrosoftRefreshToken(account.id);
-  if (!refreshToken) {
-    throw new Error("Microsoft session is missing; please sign in again.");
-  }
-  const refreshed = await refreshMsaToken(refreshToken);
-  const session = await completeMinecraftLogin(refreshed.accessToken, refreshed.refreshToken);
-  return {
-    username: account.username,
-    uuid: session.minecraftUuid,
-    accessToken: session.minecraftAccessToken,
-    userType: "msa",
-  };
+  return resolveMinecraftSession(account.id);
 }
 
 export async function launchInstance(instanceId: string): Promise<{ started: boolean }> {

@@ -55,6 +55,7 @@ declare global {
       renameSkin(id: string, name: string): Promise<SkinRecord>;
       getAccountSkin(accountId: string): Promise<SkinRecord | null>;
       setAccountSkin(accountId: string, skinId: string | null): Promise<void>;
+      applySkin(accountId: string, skinId: string): Promise<void>;
       windowMinimize(): void;
       windowMaximize(): void;
       windowClose(): void;

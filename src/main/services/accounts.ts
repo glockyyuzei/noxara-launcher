@@ -39,6 +39,11 @@ export function listAccounts(): AccountRecord[] {
   return rows.map(rowToRecord);
 }
 
+export function getAccountById(id: string): AccountRecord | null {
+  const row = getDb().prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow | undefined;
+  return row ? rowToRecord(row) : null;
+}
+
 /** Deterministic offline UUID derived the way vanilla offline mode does: from "OfflinePlayer:<name>". */
 function offlineUuidFor(username: string): string {
   const crypto = require("node:crypto") as typeof import("node:crypto");
@@ -140,4 +145,60 @@ export function getActiveAccount(): AccountRecord | null {
     | AccountRow
     | undefined;
   return row ? rowToRecord(row) : null;
+}
+
+export interface ResolvedMinecraftSession {
+  username: string;
+  uuid: string;
+  /** Empty string for offline accounts — vanilla's offline mode expects no token. */
+  accessToken: string;
+  userType: "msa" | "legacy";
+}
+
+/**
+ * Gets a launch/API-ready Minecraft session for an account: for offline profiles this
+ * is just the stored local identity; for Microsoft accounts it refreshes the MSA
+ * session and walks it through Xbox Live -> XSTS -> Minecraft Services to produce a
+ * live access token.
+ *
+ * This is the single place that logic lives — both launching the game (launch.ts) and
+ * anything else that needs to call an authenticated Mojang API on the user's behalf
+ * (e.g. uploading a skin) should go through this rather than re-deriving it.
+ *
+ * Also fixes a real bug in the code this replaced: Microsoft rotates the refresh token
+ * on every use, and the previous inline version never persisted the newly-issued one —
+ * only the original token from initial sign-in ever got saved. Depending on Microsoft's
+ * rotation/revocation policy for the app registration, that can silently break
+ * Microsoft sign-in after the first refresh, forcing a full re-login. We persist the
+ * rotated token here so that doesn't happen.
+ */
+export async function resolveMinecraftSession(accountId: string): Promise<ResolvedMinecraftSession> {
+  const account = getAccountById(accountId);
+  if (!account) throw new Error("Account not found.");
+
+  if (account.kind === "offline") {
+    return { username: account.username, uuid: account.uuid, accessToken: "", userType: "legacy" };
+  }
+
+  const refreshToken = await getMicrosoftRefreshToken(account.id);
+  if (!refreshToken) {
+    throw new Error("Microsoft session is missing; please sign in again.");
+  }
+
+  // Imported lazily to avoid a require cycle: auth/microsoft.ts has no reason to know
+  // about the accounts service, but the accounts service needs its token-exchange chain.
+  const { refreshMsaToken, completeMinecraftLogin } = await import("../auth/microsoft");
+
+  const refreshed = await refreshMsaToken(refreshToken);
+  const session = await completeMinecraftLogin(refreshed.accessToken, refreshed.refreshToken);
+
+  // Persist Microsoft's newly-rotated refresh token — see doc comment above.
+  await keytar.setPassword(KEYTAR_SERVICE, account.id, refreshed.refreshToken);
+
+  return {
+    username: account.username,
+    uuid: session.minecraftUuid,
+    accessToken: session.minecraftAccessToken,
+    userType: "msa",
+  };
 }

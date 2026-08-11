@@ -1,26 +1,29 @@
 /**
- * Local skin library for offline accounts.
+ * Local skin library, plus real Mojang skin application for Microsoft accounts.
  *
- * What this DOES do: validate, store, list, rename, delete PNG skin files, and
- * remember which stored skin is associated with which account (purely a local
- * preference, like a bookmark).
+ * Two distinct operations live here, and the UI must not conflate them:
+ *  - `setAccountSkin` just records which stored skin an account has "selected" in
+ *    Noxara's own database — a local bookmark, nothing more.
+ *  - `applySkin` is what actually changes what shows up in-game: for a Microsoft
+ *    account it uploads the PNG to Mojang's real skin service (see uploadSkinToMojang
+ *    in auth/microsoft.ts), so the skin becomes part of that account's real Mojang
+ *    profile — visible in vanilla Minecraft, and in any other launcher, not just here.
  *
- * What this does NOT do: make Minecraft actually render that skin in-game for an
- * offline account. Vanilla Minecraft fetches skins from Mojang's session-server
- * using a signed, authenticated profile — there's no client-side hook for
- * "load this local PNG instead" without either (a) a client-side mod, or
- * (b) a local server impersonating Mojang's skin API, which is the kind of
- * authentication-adjacent spoofing this project has explicitly decided not to
- * build. So "applying" a skin here only updates which skin is marked selected in
- * the launcher's own UI (useful for a resource-pack-based workflow, or for
- * authenticated Microsoft accounts via the real Mojang skin endpoint in the
- * future) — it does not patch or fake anything at the protocol level.
+ * Offline/cracked accounts have no real Mojang profile to upload a skin to. Vanilla
+ * Minecraft fetches skins from Mojang's authenticated session server, and there's no
+ * legitimate client-side hook for "load this local PNG instead" without either a
+ * client-side mod or a local server impersonating Mojang's skin API — the kind of
+ * authentication-adjacent spoofing this project has explicitly decided not to build.
+ * `applySkin` reflects that honestly: it throws a clear, specific error for offline
+ * accounts rather than pretending the skin was applied.
  */
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { getDb } from "./database";
 import { skinsDir } from "../filesystem/paths";
 import { assertWithin } from "../filesystem/paths";
+import { getAccountById, resolveMinecraftSession } from "./accounts";
+import { uploadSkinToMojang } from "../auth/microsoft";
 import type { SkinRecord } from "../../shared/types/ipc";
 
 interface SkinRow {
@@ -145,8 +148,8 @@ export function getAccountSkin(accountId: string): SkinRecord | null {
   return row ? rowToRecord(row) : null;
 }
 
-/** Marks a stored skin as this account's selected skin in the launcher UI only
- * (see module doc comment — this does not push the skin into the game itself). */
+/** Marks a stored skin as this account's selected skin in the launcher UI only —
+ * see the module doc comment. Use `applySkin` to actually push it to Mojang. */
 export function setAccountSkin(accountId: string, skinId: string | null): void {
   const db = getDb();
   if (skinId === null) {
@@ -159,4 +162,35 @@ export function setAccountSkin(accountId: string, skinId: string | null): void {
     `INSERT INTO account_skins (account_id, skin_id, applied_at) VALUES (?, ?, ?)
      ON CONFLICT(account_id) DO UPDATE SET skin_id = excluded.skin_id, applied_at = excluded.applied_at`
   ).run(accountId, skinId, new Date().toISOString());
+}
+
+/**
+ * Actually applies a stored skin in-game: uploads it to Mojang's real skin service for
+ * Microsoft accounts, then (only on success) records it as this account's selected
+ * skin. Throws — rather than silently no-op'ing — for offline accounts, since there is
+ * no real operation to perform for them; the caller/UI must surface that honestly
+ * instead of showing "Applied".
+ */
+export async function applySkin(accountId: string, skinId: string): Promise<void> {
+  const db = getDb();
+  const skinRow = db.prepare("SELECT * FROM skins WHERE id = ?").get(skinId) as SkinRow | undefined;
+  if (!skinRow) throw new Error("Skin not found.");
+
+  const account = getAccountById(accountId);
+  if (!account) throw new Error("Account not found.");
+
+  if (account.kind === "offline") {
+    throw new Error(
+      "Offline profiles can't have a real in-game skin — Mojang's skin service only works for a " +
+        "signed-in Microsoft account. Sign in with Microsoft, then apply the skin to that account."
+    );
+  }
+
+  const session = await resolveMinecraftSession(accountId);
+  const pngBytes = fs.readFileSync(skinRow.file_path);
+  await uploadSkinToMojang(session.accessToken, pngBytes, skinRow.model);
+
+  // Only persisted as "selected" once Mojang has actually confirmed the upload —
+  // never claim a skin is applied off the back of a failed request.
+  setAccountSkin(accountId, skinId);
 }

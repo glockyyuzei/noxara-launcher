@@ -268,6 +268,7 @@ export interface NoxaraApi {
   renameSkin(id: string, name: string): Promise<SkinRecord>;
   getAccountSkin(accountId: string): Promise<SkinRecord | null>;
   setAccountSkin(accountId: string, skinId: string | null): Promise<void>;
+  applySkin(accountId: string, skinId: string): Promise<void>;
 
   // Window controls
   windowMinimize(): void;
@@ -306,6 +307,7 @@ export const IPC_CHANNELS = {
   renameSkin: "noxara:skins:rename",
   getAccountSkin: "noxara:skins:getForAccount",
   setAccountSkin: "noxara:skins:setForAccount",
+  applySkin: "noxara:skins:apply",
   windowMinimize: "noxara:window:minimize",
   windowMaximize: "noxara:window:maximize",
   windowClose: "noxara:window:close",

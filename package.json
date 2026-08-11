@@ -29,9 +29,11 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
+    "clsx": "^2.1.1",
     "dotenv": "^16.4.5",
     "electron-store": "^8.2.0",
     "keytar": "^7.9.0",
+    "tailwind-merge": "^2.6.1",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
@@ -47,6 +49,7 @@
     "electron-builder": "^25.0.5",
     "esbuild": "^0.23.1",
     "eslint": "^9.9.1",
+    "lucide-react": "^0.441.0",
     "postcss": "^8.4.45",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
@@ -55,8 +58,7 @@
     "tsc-watch": "^6.2.0",
     "typescript": "^5.5.4",
     "vite": "^5.4.2",
-    "vitest": "^2.0.5",
-    "lucide-react": "^0.441.0"
+    "vitest": "^2.0.5"
   },
   "build": {
     "appId": "dev.noxara.launcher",
@@ -66,10 +68,30 @@
       "assets/**/*"
     ],
     "extraResources": [
-      { "from": "native/rust/target/release/noxara-core", "to": "noxara-core", "filter": ["**/*"] }
+      {
+        "from": "native/rust/target/release/noxara-core",
+        "to": "noxara-core",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
-    "win": { "target": "nsis", "icon": "assets/icons/icon.ico" },
-    "mac": { "target": "dmg", "icon": "assets/icons/icon.icns", "category": "public.app-category.games" },
-    "linux": { "target": ["AppImage", "deb"], "icon": "assets/icons/icon.png", "category": "Game" }
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icons/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icons/icon.icns",
+      "category": "public.app-category.games"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "assets/icons/icon.png",
+      "category": "Game"
+    }
   }
 }

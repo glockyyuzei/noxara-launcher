@@ -21,6 +21,7 @@ const XSTS_AUTH_URL = "https://xsts.auth.xboxlive.com/xsts/authorize";
 const MC_LOGIN_URL = "https://api.minecraftservices.com/authentication/login_with_xbox";
 const MC_PROFILE_URL = "https://api.minecraftservices.com/minecraft/profile";
 const MC_ENTITLEMENT_URL = "https://api.minecraftservices.com/entitlements/mcstore";
+const MC_SKINS_URL = "https://api.minecraftservices.com/minecraft/profile/skins";
 
 // Some of these endpoints sit behind bot-protection (Akamai/WAF) that silently
 // 403s requests with no User-Agent header — Node's built-in fetch doesn't send one
@@ -232,4 +233,34 @@ export async function refreshMsaToken(refreshToken: string): Promise<{ accessTok
   if (!resp.ok) throw new Error("Failed to refresh Microsoft session; please sign in again.");
   const data = (await resp.json()) as { access_token: string; refresh_token: string };
   return { accessToken: data.access_token, refreshToken: data.refresh_token };
+}
+
+/**
+ * Uploads a local skin PNG to Mojang's real skin service so it becomes this account's
+ * actual in-game skin — visible in vanilla Minecraft and any other launcher, not just
+ * Noxara, because it's now stored on the account's Mojang profile rather than anything
+ * client-local. This is the multipart endpoint the official launcher itself uses for
+ * uploading a skin file directly (as opposed to the JSON+URL variant, which requires
+ * the skin to already be hosted somewhere public).
+ */
+export async function uploadSkinToMojang(
+  mcAccessToken: string,
+  pngBytes: Buffer,
+  variant: "classic" | "slim"
+): Promise<void> {
+  const form = new FormData();
+  form.append("variant", variant);
+  // Buffer's backing ArrayBufferLike can be typed as SharedArrayBuffer, which BlobPart
+  // doesn't accept — copying into a fresh Uint8Array gives it its own plain ArrayBuffer.
+  form.append("file", new Blob([new Uint8Array(pngBytes)], { type: "image/png" }), "skin.png");
+
+  const resp = await fetch(MC_SKINS_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${mcAccessToken}`, ...COMMON_HEADERS },
+    body: form,
+  });
+  if (!resp.ok) {
+    const snippet = await safeBodySnippet(resp);
+    throw new Error(`Mojang rejected the skin upload (${resp.status}): ${snippet || "no additional details returned"}`);
+  }
 }

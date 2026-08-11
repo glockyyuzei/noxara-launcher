@@ -62,6 +62,8 @@ const api = {
   getAccountSkin: (accountId: string) => ipcRenderer.invoke(IPC_CHANNELS.getAccountSkin, accountId),
   setAccountSkin: (accountId: string, skinId: string | null) =>
     ipcRenderer.invoke(IPC_CHANNELS.setAccountSkin, accountId, skinId),
+  applySkin: (accountId: string, skinId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.applySkin, accountId, skinId),
 
   windowMinimize: () => ipcRenderer.send(IPC_CHANNELS.windowMinimize),
   windowMaximize: () => ipcRenderer.send(IPC_CHANNELS.windowMaximize),

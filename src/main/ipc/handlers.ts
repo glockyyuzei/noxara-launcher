@@ -124,6 +124,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       skinsService.setAccountSkin(accountId, skinId)
     )
   );
+  ipcMain.handle(
+    IPC_CHANNELS.applySkin,
+    safe((_e, accountId: string, skinId: string) => skinsService.applySkin(accountId, skinId))
+  );
 
   ipcMain.on(IPC_CHANNELS.windowMinimize, () => getWindow()?.minimize());
   ipcMain.on(IPC_CHANNELS.windowMaximize, () => {

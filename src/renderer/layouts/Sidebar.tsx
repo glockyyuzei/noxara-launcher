@@ -20,19 +20,21 @@ import { AccountSelector } from "../components/AccountSelector";
 import { Tooltip } from "../components/Tooltip";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Home", icon: Home, end: true },
-  { to: "/instances", label: "Instances", icon: Boxes },
-  { to: "/modpacks", label: "Modpacks", icon: Package },
-  { to: "/mods", label: "Mods", icon: Puzzle },
-  { to: "/resourcepacks", label: "Resource Packs", icon: Image },
-  { to: "/shaders", label: "Shaders", icon: Sparkles },
-  { to: "/servers", label: "Servers", icon: Server },
-  { to: "/accounts", label: "Accounts", icon: Users },
-  { to: "/skins", label: "Skins", icon: Shirt },
-  { to: "/java", label: "Java", icon: Coffee },
-  { to: "/downloads", label: "Downloads", icon: Download },
-  { to: "/settings", label: "Settings", icon: Settings },
-];
+  { to: "/", label: "Home", icon: Home, end: true, section: "Main" },
+  { to: "/instances", label: "Instances", icon: Boxes, end: false, section: "Main" },
+  { to: "/modpacks", label: "Modpacks", icon: Package, end: false, section: "Content" },
+  { to: "/mods", label: "Mods", icon: Puzzle, end: false, section: "Content" },
+  { to: "/resourcepacks", label: "Resource Packs", icon: Image, end: false, section: "Content" },
+  { to: "/shaders", label: "Shaders", icon: Sparkles, end: false, section: "Content" },
+  { to: "/servers", label: "Servers", icon: Server, end: false, section: "Multiplayer" },
+  { to: "/accounts", label: "Accounts", icon: Users, end: false, section: "Account" },
+  { to: "/skins", label: "Skins", icon: Shirt, end: false, section: "Account" },
+  { to: "/java", label: "Java", icon: Coffee, end: false, section: "System" },
+  { to: "/downloads", label: "Downloads", icon: Download, end: false, section: "System" },
+  { to: "/settings", label: "Settings", icon: Settings, end: false, section: "System" },
+] as const;
+
+const SECTION_ORDER = ["Main", "Content", "Multiplayer", "Account", "System"] as const;
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
@@ -43,31 +45,45 @@ export function Sidebar() {
         collapsed ? "w-16" : "w-56"
       } shrink-0 flex flex-col bg-noxara-black border-r border-noxara-border transition-[width] duration-200 ease-out`}
     >
-      <nav className="flex-1 py-3 px-2 space-y-0.5 overflow-y-auto overflow-x-hidden">
-        {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => {
-          const link = (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                `group relative flex items-center gap-3 rounded px-3 py-2 text-sm transition-all duration-150 yz-focus-ring ${
-                  isActive
-                    ? "bg-noxara-surface text-noxara-white before:content-[''] before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:bg-noxara-white before:rounded-full before:-ml-2"
-                    : "text-noxara-subtle hover:text-noxara-text hover:bg-noxara-surface/60 hover:translate-x-0.5"
-                }`
-              }
-            >
-              <Icon size={17} className="shrink-0" />
-              {!collapsed && <span className="truncate">{label}</span>}
-            </NavLink>
-          );
-          return collapsed ? (
-            <Tooltip key={to} label={label} side="right">
-              {link}
-            </Tooltip>
-          ) : (
-            link
+      <nav className="flex-1 py-3 px-2.5 space-y-3.5 overflow-y-auto overflow-x-hidden">
+        {SECTION_ORDER.map((section) => {
+          const items = NAV_ITEMS.filter((i) => i.section === section);
+          return (
+            <div key={section}>
+              {!collapsed && (
+                <p className="px-2.5 mb-1 text-[10px] font-semibold uppercase tracking-wider text-noxara-muted/70">
+                  {section}
+                </p>
+              )}
+              <div className="space-y-0.5">
+                {items.map(({ to, label, icon: Icon, end }) => {
+                  const link = (
+                    <NavLink
+                      key={to}
+                      to={to}
+                      end={end}
+                      className={({ isActive }) =>
+                        `group flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150 yz-focus-ring ${
+                          isActive
+                            ? "bg-noxara-surface text-noxara-white"
+                            : "text-noxara-subtle hover:text-noxara-text hover:bg-noxara-surface/50"
+                        }`
+                      }
+                    >
+                      <Icon size={16} className="shrink-0" strokeWidth={1.75} />
+                      {!collapsed && <span className="truncate">{label}</span>}
+                    </NavLink>
+                  );
+                  return collapsed ? (
+                    <Tooltip key={to} label={label} side="right">
+                      {link}
+                    </Tooltip>
+                  ) : (
+                    link
+                  );
+                })}
+              </div>
+            </div>
           );
         })}
       </nav>
