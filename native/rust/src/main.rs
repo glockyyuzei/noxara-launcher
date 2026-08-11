@@ -1,5 +1,6 @@
 mod downloads;
 mod fabric;
+mod forge;
 mod java;
 mod launch;
 mod maven;
@@ -116,6 +117,81 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
             let merged = fabric::build_fabric_version_detail(http, &vanilla_detail, game_version, loader_version).await?;
             let recommended_java = mojang::recommend_java_major(&vanilla_detail);
             Ok(json!({ "detail": merged, "recommendedJavaMajor": recommended_java }))
+        }
+
+        "forge.getVersions" => {
+            let mc_version = req
+                .params
+                .get("mcVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing mcVersion"))?;
+            let versions = forge::get_forge_versions(http, mc_version).await?;
+            Ok(serde_json::to_value(versions)?)
+        }
+
+        "forge.install" => {
+            let task_id = req
+                .params
+                .get("taskId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing taskId"))?
+                .to_string();
+            let mc_version = req
+                .params
+                .get("mcVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing mcVersion"))?
+                .to_string();
+            let full_forge_version = req
+                .params
+                .get("fullForgeVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing fullForgeVersion"))?
+                .to_string();
+            let java_path = req
+                .params
+                .get("javaPath")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing javaPath"))?
+                .to_string();
+            let libraries_dir = std::path::PathBuf::from(
+                req.params
+                    .get("librariesDir")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing librariesDir"))?,
+            );
+            let work_dir = std::path::PathBuf::from(
+                req.params
+                    .get("workDir")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing workDir"))?,
+            );
+            let vanilla_client_jar = std::path::PathBuf::from(
+                req.params
+                    .get("vanillaClientJar")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing vanillaClientJar"))?,
+            );
+            let vanilla_detail: mojang::VersionDetail = serde_json::from_value(
+                req.params
+                    .get("vanillaDetail")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("missing vanillaDetail"))?,
+            )?;
+
+            let merged = forge::install(
+                http,
+                &task_id,
+                &mc_version,
+                &full_forge_version,
+                &java_path,
+                &libraries_dir,
+                &work_dir,
+                &vanilla_client_jar,
+                &vanilla_detail,
+            )
+            .await?;
+            Ok(json!({ "detail": merged }))
         }
 
         "java.detectAll" => {

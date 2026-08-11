@@ -6,6 +6,8 @@ import type {
   VersionManifest,
   DownloadProgressPayload,
   DownloadCompletePayload,
+  ForgeVersion,
+  ForgeInstallProgressPayload,
   GameOutputPayload,
   GameExitPayload,
   ModSearchQuery,
@@ -40,6 +42,7 @@ declare global {
       completeMicrosoftLogin(deviceCode: string, pollIntervalSeconds: number, expiresInSeconds: number): Promise<AccountRecord>;
       openExternal(url: string): Promise<void>;
       launchInstance(id: string): Promise<{ started: boolean }>;
+      getForgeVersions(mcVersion: string): Promise<ForgeVersion[]>;
       searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult>;
       getModVersions(projectId: string, loader?: ModLoader, gameVersion?: string): Promise<ModrinthVersion[]>;
       installMod(instanceId: string, projectId: string, versionId: string): Promise<InstalledMod>;
@@ -61,6 +64,7 @@ declare global {
       onGameExit(cb: (p: GameExitPayload) => void): () => void;
       onModDownloadProgress(cb: (p: ModDownloadProgressPayload) => void): () => void;
       onModDownloadComplete(cb: (p: ModDownloadCompletePayload) => void): () => void;
+      onForgeInstallProgress(cb: (p: ForgeInstallProgressPayload) => void): () => void;
     };
   }
 }

@@ -9,6 +9,7 @@ import type {
   CreateInstanceInput,
   DownloadCompletePayload,
   DownloadProgressPayload,
+  ForgeInstallProgressPayload,
   GameExitPayload,
   GameOutputPayload,
   ModDownloadCompletePayload,
@@ -41,6 +42,8 @@ const api = {
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url),
 
   launchInstance: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.launchInstance, id),
+
+  getForgeVersions: (mcVersion: string) => ipcRenderer.invoke(IPC_CHANNELS.getForgeVersions, mcVersion),
 
   searchMods: (query: ModSearchQuery) => ipcRenderer.invoke(IPC_CHANNELS.searchMods, query),
   getModVersions: (projectId: string, loader?: ModLoader, gameVersion?: string) =>
@@ -93,6 +96,11 @@ const api = {
     const listener = (_e: unknown, payload: ModDownloadCompletePayload) => cb(payload);
     ipcRenderer.on(IPC_CHANNELS.eventModDownloadComplete, listener);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.eventModDownloadComplete, listener);
+  },
+  onForgeInstallProgress: (cb: (payload: ForgeInstallProgressPayload) => void) => {
+    const listener = (_e: unknown, payload: ForgeInstallProgressPayload) => cb(payload);
+    ipcRenderer.on(IPC_CHANNELS.eventForgeInstallProgress, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventForgeInstallProgress, listener);
   },
 };
 

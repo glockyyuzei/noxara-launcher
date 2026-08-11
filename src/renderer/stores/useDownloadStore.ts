@@ -1,5 +1,9 @@
 import { create } from "zustand";
-import type { ModDownloadCompletePayload, ModDownloadProgressPayload } from "@shared/types/ipc";
+import type {
+  ModDownloadCompletePayload,
+  ModDownloadProgressPayload,
+  ForgeInstallProgressPayload,
+} from "@shared/types/ipc";
 
 export interface ModDownloadEntry {
   taskId: string;
@@ -11,15 +15,25 @@ export interface ModDownloadEntry {
   error?: string;
 }
 
+export interface ForgeInstallEntry {
+  taskId: string;
+  stage: string;
+  message: string;
+  status: "installing" | "complete";
+}
+
 interface DownloadState {
   downloads: ModDownloadEntry[];
+  forgeInstalls: ForgeInstallEntry[];
   onProgress: (p: ModDownloadProgressPayload) => void;
   onComplete: (p: ModDownloadCompletePayload) => void;
+  onForgeProgress: (p: ForgeInstallProgressPayload) => void;
   clearCompleted: () => void;
 }
 
 export const useDownloadStore = create<DownloadState>((set) => ({
   downloads: [],
+  forgeInstalls: [],
   onProgress: (p) =>
     set((state) => {
       const idx = state.downloads.findIndex((d) => d.taskId === p.taskId);
@@ -44,6 +58,23 @@ export const useDownloadStore = create<DownloadState>((set) => ({
           : d
       ),
     })),
+  onForgeProgress: (p) =>
+    set((state) => {
+      const idx = state.forgeInstalls.findIndex((f) => f.taskId === p.taskId);
+      const entry: ForgeInstallEntry = {
+        taskId: p.taskId,
+        stage: p.stage,
+        message: p.message,
+        status: p.stage === "complete" ? "complete" : "installing",
+      };
+      if (idx === -1) return { forgeInstalls: [entry, ...state.forgeInstalls] };
+      const next = [...state.forgeInstalls];
+      next[idx] = entry;
+      return { forgeInstalls: next };
+    }),
   clearCompleted: () =>
-    set((state) => ({ downloads: state.downloads.filter((d) => d.status === "downloading") })),
+    set((state) => ({
+      downloads: state.downloads.filter((d) => d.status === "downloading"),
+      forgeInstalls: state.forgeInstalls.filter((f) => f.status === "installing"),
+    })),
 }));

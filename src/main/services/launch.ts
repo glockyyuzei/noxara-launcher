@@ -13,6 +13,7 @@ import { detectJava } from "./java";
 import { librariesDir, assetsDir, versionsDir } from "../filesystem/paths";
 import { refreshMsaToken, completeMinecraftLogin } from "../auth/microsoft";
 import { getFabricVersionDetail } from "./fabric";
+import { installForge } from "./forge";
 
 interface DownloadTaskInput {
   url: string;
@@ -228,12 +229,36 @@ export async function launchInstance(instanceId: string): Promise<{ started: boo
     throw new Error(`Unknown Minecraft version: ${instance.minecraft_version}`);
   }
 
-  const { detail: versionDetail, recommendedJavaMajor } =
-    instance.loader === "fabric"
-      ? await getFabricVersionDetail(instance.minecraft_version, instance.loader_version ?? "")
-      : await coreBridge.call<{ detail: any; recommendedJavaMajor: number }>("mojang.getVersionDetail", {
-          versionId: instance.minecraft_version,
-        });
+  const { detail: vanillaDetail, recommendedJavaMajor } = await coreBridge.call<{
+    detail: any;
+    recommendedJavaMajor: number;
+  }>("mojang.getVersionDetail", { versionId: instance.minecraft_version });
+
+  let versionDetail: any = vanillaDetail;
+
+  if (instance.loader === "fabric") {
+    ({ detail: versionDetail } = await getFabricVersionDetail(instance.minecraft_version, instance.loader_version ?? ""));
+  } else if (instance.loader === "forge") {
+    if (!instance.loader_version) {
+      throw new Error("This instance has no Forge version recorded — try recreating it.");
+    }
+    // Forge's own installer tools need a real vanilla client jar to patch against
+    // (the MINECRAFT_JAR token) and a working JVM to run in — resolve both before
+    // running the installer pipeline.
+    const nativesDir = path.join(instance.instance_dir, "natives");
+    const { clientJarPath: vanillaClientJarPath } = await ensureVersionAssetsAndLibraries(vanillaDetail, nativesDir);
+    const javaPathForInstall = await resolveJavaPath(instance.java_path, recommendedJavaMajor);
+
+    const { detail } = await installForge(
+      randomUUID(),
+      instance.minecraft_version,
+      instance.loader_version,
+      javaPathForInstall,
+      vanillaClientJarPath,
+      vanillaDetail
+    );
+    versionDetail = detail;
+  }
 
   const { clientJarPath, librariesDirPath, assetsDirPath } = await ensureVersionAssetsAndLibraries(
     versionDetail,

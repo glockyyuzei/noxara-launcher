@@ -96,6 +96,26 @@ export interface GameExitPayload {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Forge                                                                       */
+/* -------------------------------------------------------------------------- */
+
+export interface ForgeVersion {
+  minecraftVersion: string;
+  forgeVersion: string;
+  /** The exact "<mc>-<forge>" string used in installer URLs — pass this back as
+   * `loaderVersion` when creating a Forge instance. */
+  fullVersion: string;
+  recommended: boolean;
+  latest: boolean;
+}
+
+export interface ForgeInstallProgressPayload {
+  taskId: string;
+  stage: "download" | "libraries" | "processing" | "finalizing" | "complete" | string;
+  message: string;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Modrinth / mods                                                             */
 /* -------------------------------------------------------------------------- */
 
@@ -230,6 +250,9 @@ export interface NoxaraApi {
   // Launch
   launchInstance(instanceId: string): Promise<{ started: boolean }>;
 
+  // Forge
+  getForgeVersions(mcVersion: string): Promise<ForgeVersion[]>;
+
   // Mods (Modrinth)
   searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult>;
   getModVersions(projectId: string, loader?: ModLoader, gameVersion?: string): Promise<ModrinthVersion[]>;
@@ -270,6 +293,7 @@ export const IPC_CHANNELS = {
   completeMicrosoftLogin: "noxara:accounts:completeMicrosoftLogin",
   openExternal: "noxara:shell:openExternal",
   launchInstance: "noxara:launch:start",
+  getForgeVersions: "noxara:forge:getVersions",
   searchMods: "noxara:mods:search",
   getModVersions: "noxara:mods:getVersions",
   installMod: "noxara:mods:install",
@@ -292,4 +316,5 @@ export const IPC_CHANNELS = {
   eventGameExit: "noxara:event:gameExit",
   eventModDownloadProgress: "noxara:event:modDownloadProgress",
   eventModDownloadComplete: "noxara:event:modDownloadComplete",
+  eventForgeInstallProgress: "noxara:event:forgeInstallProgress",
 } as const;

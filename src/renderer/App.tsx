@@ -24,6 +24,7 @@ export default function App() {
   const refreshAccounts = useAccountStore((s) => s.refresh);
   const onModProgress = useDownloadStore((s) => s.onProgress);
   const onModComplete = useDownloadStore((s) => s.onComplete);
+  const onForgeProgress = useDownloadStore((s) => s.onForgeProgress);
 
   // Load the account list once at app start so the bottom-left selector,
   // home screen, and accounts page all read from the same populated store.
@@ -56,6 +57,10 @@ export default function App() {
       onModComplete(p);
       if (!p.success) toast.error("Mod download failed", p.error);
     });
+    const offForgeProgress = window.noxara.onForgeInstallProgress((p) => {
+      onForgeProgress(p);
+      if (p.stage === "complete") toast.success("Forge installed", p.message);
+    });
     return () => {
       offProgress();
       offComplete();
@@ -63,8 +68,9 @@ export default function App() {
       offExit();
       offModProgress();
       offModComplete();
+      offForgeProgress();
     };
-  }, [appendLog, markRunning, setActiveDownload, onModProgress, onModComplete]);
+  }, [appendLog, markRunning, setActiveDownload, onModProgress, onModComplete, onForgeProgress]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-noxara-black min-w-[640px]">

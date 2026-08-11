@@ -14,6 +14,8 @@ interface ModState {
   sort: ModSearchSort;
   hits: ModrinthSearchHit[];
   totalHits: number;
+  offset: number;
+  limit: number;
   searching: boolean;
   searchError: string | null;
 
@@ -25,7 +27,9 @@ interface ModState {
   setQuery: (q: string) => void;
   setLoader: (l: ModLoader | "all") => void;
   setSort: (s: ModSearchSort) => void;
-  search: () => Promise<void>;
+  search: (offset?: number) => Promise<void>;
+  nextPage: () => Promise<void>;
+  prevPage: () => Promise<void>;
 
   refreshInstalled: (instanceId: string) => Promise<void>;
   install: (instanceId: string, projectId: string, versionId: string) => Promise<void>;
@@ -41,6 +45,8 @@ export const useModStore = create<ModState>((set, get) => ({
   sort: "relevance",
   hits: [],
   totalHits: 0,
+  offset: 0,
+  limit: 20,
   searching: false,
   searchError: null,
 
@@ -48,20 +54,22 @@ export const useModStore = create<ModState>((set, get) => ({
   installingKeys: new Set(),
   updatesByInstance: {},
 
-  setQuery: (query) => set({ query }),
-  setLoader: (loader) => set({ loader }),
-  setSort: (sort) => set({ sort }),
+  setQuery: (query) => set({ query, offset: 0 }),
+  setLoader: (loader) => set({ loader, offset: 0 }),
+  setSort: (sort) => set({ sort, offset: 0 }),
 
-  search: async () => {
+  search: async (offsetOverride) => {
     const token = ++searchToken;
-    const { query, loader, sort } = get();
-    set({ searching: true, searchError: null });
+    const { query, loader, sort, limit } = get();
+    const offset = offsetOverride ?? get().offset;
+    set({ searching: true, searchError: null, offset });
     try {
       const result = await window.noxara.searchMods({
         query,
         loader: loader === "all" ? undefined : loader,
         sort,
-        limit: 20,
+        limit,
+        offset,
       });
       if (token !== searchToken) return; // a newer search superseded this one
       set({ hits: result.hits, totalHits: result.totalHits, searching: false });
@@ -73,6 +81,17 @@ export const useModStore = create<ModState>((set, get) => ({
         hits: [],
       });
     }
+  },
+
+  nextPage: async () => {
+    const { offset, limit, totalHits } = get();
+    if (offset + limit >= totalHits) return;
+    await get().search(offset + limit);
+  },
+
+  prevPage: async () => {
+    const { offset, limit } = get();
+    await get().search(Math.max(0, offset - limit));
   },
 
   refreshInstalled: async (instanceId) => {

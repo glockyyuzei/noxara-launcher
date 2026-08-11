@@ -9,6 +9,7 @@ import * as accountsService from "../services/accounts";
 import * as launchService from "../services/launch";
 import * as modrinthService from "../services/modrinth";
 import * as modsService from "../services/mods";
+import * as forgeService from "../services/forge";
 import * as skinsService from "../services/skins";
 import * as microsoftLoginService from "../services/microsoft-login";
 import type {
@@ -69,6 +70,8 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   );
 
   ipcMain.handle(IPC_CHANNELS.launchInstance, safe((_e, id: string) => launchService.launchInstance(id)));
+
+  ipcMain.handle(IPC_CHANNELS.getForgeVersions, safe((_e, mcVersion: string) => forgeService.getForgeVersions(mcVersion)));
 
   ipcMain.handle(
     IPC_CHANNELS.searchMods,
@@ -136,6 +139,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   coreBridge.on("download.complete", forward(IPC_CHANNELS.eventDownloadComplete));
   coreBridge.on("game.output", forward(IPC_CHANNELS.eventGameOutput));
   coreBridge.on("game.exit", forward(IPC_CHANNELS.eventGameExit));
+  coreBridge.on("forge.install.progress", forward(IPC_CHANNELS.eventForgeInstallProgress));
 
   // Mod downloads run in Node (not the Rust sidecar), so forward their events directly.
   modsService.modDownloadEvents.on("progress", forward(IPC_CHANNELS.eventModDownloadProgress));

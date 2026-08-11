@@ -26,6 +26,8 @@ export default function ModsPage() {
     sort,
     hits,
     totalHits,
+    offset,
+    limit,
     searching,
     searchError,
     installedByInstance,
@@ -34,6 +36,8 @@ export default function ModsPage() {
     setLoader,
     setSort,
     search,
+    nextPage,
+    prevPage,
     install,
     refreshInstalled,
   } = useModStore();
@@ -50,7 +54,7 @@ export default function ModsPage() {
 
   useEffect(() => {
     clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => search(), 350);
+    debounceRef.current = setTimeout(() => search(0), 350);
     return () => clearTimeout(debounceRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, loader, sort]);
@@ -71,19 +75,9 @@ export default function ModsPage() {
     );
   }
 
-  async function handleInstall(instanceId: string, mod: ModrinthSearchHit) {
+  async function handleInstall(instanceId: string, mod: ModrinthSearchHit, versionId: string) {
     try {
-      const versions = await window.noxara.getModVersions(
-        mod.projectId,
-        instances.find((i) => i.id === instanceId)?.loader as ModLoader,
-        instances.find((i) => i.id === instanceId)?.minecraftVersion
-      );
-      const best = versions[0];
-      if (!best) {
-        toast.error("No compatible version found", `${mod.title} has no version for this instance.`);
-        return;
-      }
-      await install(instanceId, mod.projectId, best.id);
+      await install(instanceId, mod.projectId, versionId);
       toast.success("Mod installed", `${mod.title} was added to your instance`);
       setInstallTarget(null);
     } catch (e) {
@@ -165,7 +159,30 @@ export default function ModsPage() {
         </div>
       ) : (
         <>
-          <p className="text-xs text-noxara-muted mb-2.5">{totalHits.toLocaleString()} results</p>
+          <div className="flex items-center justify-between mb-2.5">
+            <p className="text-xs text-noxara-muted">
+              {totalHits.toLocaleString()} results
+              {totalHits > 0 && ` · ${offset + 1}-${Math.min(offset + limit, totalHits)}`}
+            </p>
+            {totalHits > limit && (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => prevPage()}
+                  disabled={offset === 0}
+                  className="yz-btn-ghost text-xs px-2 py-1 disabled:opacity-30"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() => nextPage()}
+                  disabled={offset + limit >= totalHits}
+                  className="yz-btn-ghost text-xs px-2 py-1 disabled:opacity-30"
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </div>
           <div className="space-y-2.5">
             {hits.map((mod) => (
               <ModCard
@@ -180,6 +197,24 @@ export default function ModsPage() {
               />
             ))}
           </div>
+          {totalHits > limit && (
+            <div className="flex items-center justify-center gap-2 mt-4">
+              <button
+                onClick={() => prevPage()}
+                disabled={offset === 0}
+                className="yz-btn-secondary text-xs px-3 py-1.5 disabled:opacity-30"
+              >
+                Previous
+              </button>
+              <button
+                onClick={() => nextPage()}
+                disabled={offset + limit >= totalHits}
+                className="yz-btn-secondary text-xs px-3 py-1.5 disabled:opacity-30"
+              >
+                Next
+              </button>
+            </div>
+          )}
         </>
       )}
 

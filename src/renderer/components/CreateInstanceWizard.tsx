@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { CreateInstanceInput, InstanceRecord, VersionManifestEntry } from "@shared/types/ipc";
+import type { CreateInstanceInput, InstanceRecord, VersionManifestEntry, ForgeVersion } from "@shared/types/ipc";
 
 const LOADERS: CreateInstanceInput["loader"][] = ["vanilla", "fabric", "forge"];
 
@@ -16,6 +16,10 @@ export function CreateInstanceWizard({
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [minecraftVersion, setMinecraftVersion] = useState<string | null>(null);
   const [loader, setLoader] = useState<CreateInstanceInput["loader"]>("vanilla");
+  const [forgeVersions, setForgeVersions] = useState<ForgeVersion[]>([]);
+  const [forgeVersionsLoading, setForgeVersionsLoading] = useState(false);
+  const [forgeVersionsError, setForgeVersionsError] = useState<string | null>(null);
+  const [selectedForgeVersion, setSelectedForgeVersion] = useState<string | null>(null);
   const [minRam, setMinRam] = useState(2048);
   const [maxRam, setMaxRam] = useState(4096);
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +32,36 @@ export function CreateInstanceWizard({
     });
   }, []);
 
+  // Fetch real, currently-published Forge builds for whichever Minecraft version is
+  // selected — never auto-pick versions[0] silently; the user chooses from this list
+  // (defaulting the selection to Forge's own "recommended" tag when one exists).
+  useEffect(() => {
+    if (loader !== "forge" || !minecraftVersion) return;
+    let cancelled = false;
+    setForgeVersionsLoading(true);
+    setForgeVersionsError(null);
+    setForgeVersions([]);
+    setSelectedForgeVersion(null);
+    window.noxara
+      .getForgeVersions(minecraftVersion)
+      .then((list) => {
+        if (cancelled) return;
+        setForgeVersions(list);
+        const preferred = list.find((v) => v.recommended) ?? list.find((v) => v.latest) ?? list[0];
+        setSelectedForgeVersion(preferred?.fullVersion ?? null);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setForgeVersionsError(e instanceof Error ? e.message : "Failed to load Forge versions");
+      })
+      .finally(() => {
+        if (!cancelled) setForgeVersionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loader, minecraftVersion]);
+
   const visibleVersions = useMemo(
     () => versions.filter((v) => showSnapshots || v.type === "release").slice(0, 100),
     [versions, showSnapshots]
@@ -35,6 +69,10 @@ export function CreateInstanceWizard({
 
   async function handleCreate() {
     if (!minecraftVersion) return;
+    if (loader === "forge" && !selectedForgeVersion) {
+      setError("Select a Forge version first");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -42,7 +80,7 @@ export function CreateInstanceWizard({
         name: name.trim() || `New Instance`,
         minecraftVersion,
         loader,
-        loaderVersion: loader === "vanilla" ? null : "latest",
+        loaderVersion: loader === "vanilla" ? null : loader === "forge" ? selectedForgeVersion : "latest",
         minRamMb: minRam,
         maxRamMb: maxRam,
       });
@@ -108,30 +146,68 @@ export function CreateInstanceWizard({
           {step === 3 && (
             <div>
               <label className="yz-label block mb-2">Mod Loader</label>
-              <div className="grid grid-cols-2 gap-2">
-                {LOADERS.map((l) => {
-                  const supported = l === "vanilla" || l === "fabric";
-                  return (
-                    <button
-                      key={l}
-                      onClick={() => supported && setLoader(l)}
-                      disabled={!supported}
-                      title={supported ? undefined : "Not implemented yet"}
-                      className={`yz-card px-3 py-2.5 text-sm capitalize transition-colors relative ${
-                        loader === l ? "border-noxara-white text-noxara-white" : "text-noxara-subtle hover:border-noxara-border-strong"
-                      } ${!supported ? "opacity-40 cursor-not-allowed" : ""}`}
-                    >
-                      {l}
-                      {!supported && <span className="block text-[10px] text-noxara-muted mt-0.5">Coming soon</span>}
-                    </button>
-                  );
-                })}
+              <div className="grid grid-cols-3 gap-2">
+                {LOADERS.map((l) => (
+                  <button
+                    key={l}
+                    onClick={() => setLoader(l)}
+                    className={`yz-card px-3 py-2.5 text-sm capitalize transition-colors relative ${
+                      loader === l ? "border-noxara-white text-noxara-white" : "text-noxara-subtle hover:border-noxara-border-strong"
+                    }`}
+                  >
+                    {l}
+                  </button>
+                ))}
               </div>
+
               {loader === "fabric" && (
                 <p className="text-xs text-noxara-muted mt-3">
                   The latest stable Fabric loader build for {minecraftVersion} will be resolved and
                   installed automatically from Fabric's meta API.
                 </p>
+              )}
+
+              {loader === "forge" && (
+                <div className="mt-3">
+                  <label className="yz-label block mb-2">Forge Version</label>
+                  {forgeVersionsLoading && (
+                    <div className="text-sm text-noxara-muted px-3 py-4 text-center border border-noxara-border rounded">
+                      Loading Forge builds for {minecraftVersion}…
+                    </div>
+                  )}
+                  {forgeVersionsError && (
+                    <div className="text-sm text-noxara-error px-3 py-3 border border-noxara-border rounded">
+                      {forgeVersionsError}
+                    </div>
+                  )}
+                  {!forgeVersionsLoading && !forgeVersionsError && (
+                    <div className="max-h-48 overflow-y-auto border border-noxara-border rounded">
+                      {forgeVersions.map((v) => (
+                        <button
+                          key={v.fullVersion}
+                          onClick={() => setSelectedForgeVersion(v.fullVersion)}
+                          className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between hover:bg-noxara-elevated transition-colors ${
+                            selectedForgeVersion === v.fullVersion ? "bg-noxara-elevated text-noxara-white" : "text-noxara-subtle"
+                          }`}
+                        >
+                          <span>{v.forgeVersion}</span>
+                          <span className="text-xs text-noxara-muted">
+                            {v.recommended ? "Recommended" : v.latest ? "Latest" : ""}
+                          </span>
+                        </button>
+                      ))}
+                      {forgeVersions.length === 0 && (
+                        <div className="px-3 py-4 text-sm text-noxara-muted text-center">
+                          No Forge builds found for {minecraftVersion}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <p className="text-xs text-noxara-muted mt-3">
+                    Installing Forge runs its own installer tools the first time this build is used
+                    (usually under a minute) — you'll see progress on first launch.
+                  </p>
+                </div>
               )}
             </div>
           )}

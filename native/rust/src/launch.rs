@@ -87,6 +87,102 @@ fn rules_allow(rules: &Option<Vec<Value>>) -> bool {
     allowed
 }
 
+/// Evaluates a modern `arguments.jvm`/`arguments.game` rule entry, which — unlike
+/// library rules — can also gate on a `features` map (e.g. `has_custom_resolution`,
+/// `is_demo_user`). We don't support any of those optional features today, so a rule
+/// that requires one to be true simply never matches, which correctly drops the
+/// conditional argument (e.g. --width/--height come from our own explicit width/height
+/// handling below, not from a features-gated arg).
+fn argument_rule_allows(rules: &[Value]) -> bool {
+    if rules.is_empty() {
+        return true;
+    }
+    let current_os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "osx"
+    } else {
+        "linux"
+    };
+
+    let mut allowed = false;
+    for rule in rules {
+        let action = rule.get("action").and_then(Value::as_str).unwrap_or("allow");
+        let os_matches = match rule.get("os").and_then(|o| o.get("name")).and_then(Value::as_str) {
+            Some(name) => name == current_os,
+            None => true,
+        };
+        // Any required feature we don't implement disqualifies this rule.
+        let features_match = match rule.get("features").and_then(Value::as_object) {
+            Some(features) => features.values().all(|v| v.as_bool() == Some(false)),
+            None => true,
+        };
+        if os_matches && features_match {
+            allowed = action == "allow";
+        }
+    }
+    allowed
+}
+
+/// Substitutes every `${token}` occurrence in `value` using `subst`, leaving unknown
+/// tokens untouched rather than blanking them (safer than the single-token `substitute`
+/// helper below when a string can contain more than one placeholder, e.g. game args).
+fn substitute_all(value: &str, subst: &HashMap<&str, String>) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        if let Some(end) = after.find('}') {
+            let key = &after[..end];
+            match subst.get(key) {
+                Some(v) => out.push_str(v),
+                None => {
+                    out.push_str("${");
+                    out.push_str(key);
+                    out.push('}');
+                }
+            }
+            rest = &after[end + 1..];
+        } else {
+            out.push_str("${");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Pushes the string(s) from a modern `arguments.jvm`/`arguments.game` entry onto
+/// `out`, substituting tokens and respecting the entry's rules (if it's a conditional
+/// `{rules, value}` object rather than a plain string).
+fn push_argument_entry(entry: &Value, subst: &HashMap<&str, String>, out: &mut Vec<String>) {
+    if let Some(s) = entry.as_str() {
+        out.push(substitute_all(s, subst));
+        return;
+    }
+    let Some(obj) = entry.as_object() else { return };
+    let rules: Vec<Value> = obj
+        .get("rules")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if !argument_rule_allows(&rules) {
+        return;
+    }
+    match obj.get("value") {
+        Some(Value::String(s)) => out.push(substitute_all(s, subst)),
+        Some(Value::Array(arr)) => {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    out.push(substitute_all(s, subst));
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn resolve_classpath(detail: &VersionDetail, libraries_dir: &Path, client_jar: &Path) -> Vec<String> {
     let mut cp = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -133,18 +229,6 @@ pub fn build_launch_args(
 
     let classpath = resolve_classpath(detail, &libraries_dir, &client_jar).join(classpath_separator());
 
-    let mut args = vec![
-        format!("-Xms{}M", instance.min_ram_mb),
-        format!("-Xmx{}M", instance.max_ram_mb),
-        format!("-Djava.library.path={}", natives_dir.display()),
-        "-Dminecraft.launcher.brand=noxara-launcher".to_string(),
-        "-Dminecraft.launcher.version=0.1.0".to_string(),
-    ];
-    args.extend(instance.extra_jvm_args.iter().cloned());
-    args.push("-cp".to_string());
-    args.push(classpath);
-    args.push(detail.main_class.clone());
-
     let mut subst: HashMap<&str, String> = HashMap::new();
     subst.insert("auth_player_name", account.username.clone());
     subst.insert("version_name", detail.id.clone());
@@ -157,37 +241,108 @@ pub fn build_launch_args(
     subst.insert("version_type", "release".to_string());
     subst.insert("user_properties", "{}".to_string());
     subst.insert("game_assets", assets_dir.to_string_lossy().to_string());
-
-    if let Some(legacy) = &detail.legacy_arguments {
-        for token in legacy.split_whitespace() {
-            args.push(substitute(token, &subst));
-        }
-    } else {
-        // Modern versions carry structured arguments.game[]; fall back to the minimal
-        // required set if absent so launching never silently no-ops.
-        args.push("--username".to_string());
-        args.push(account.username.clone());
-        args.push("--version".to_string());
-        args.push(detail.id.clone());
-        args.push("--gameDir".to_string());
-        args.push(instance_dir.to_string_lossy().to_string());
-        args.push("--assetsDir".to_string());
-        args.push(assets_dir.to_string_lossy().to_string());
-        args.push("--assetIndex".to_string());
-        args.push(detail.assets.clone());
-        args.push("--uuid".to_string());
-        args.push(account.uuid.clone());
-        args.push("--accessToken".to_string());
-        args.push(account.access_token.clone());
-        args.push("--userType".to_string());
-        args.push(account.user_type.clone());
+    subst.insert("auth_xuid", "0".to_string());
+    subst.insert("clientid", "".to_string());
+    // Tokens used by modern (1.13+) arguments.jvm, and by Forge/NeoForge version JSONs
+    // in particular, whose JVM args reference the library and natives directories and
+    // the classpath directly rather than us hardcoding -cp placement.
+    subst.insert("natives_directory", natives_dir.to_string_lossy().to_string());
+    subst.insert("launcher_name", "noxara-launcher".to_string());
+    subst.insert("launcher_version", "0.1.0".to_string());
+    subst.insert("classpath", classpath.clone());
+    subst.insert("classpath_separator", classpath_separator().to_string());
+    subst.insert("library_directory", libraries_dir.to_string_lossy().to_string());
+    if let (Some(w), Some(h)) = (instance.width, instance.height) {
+        subst.insert("resolution_width", w.to_string());
+        subst.insert("resolution_height", h.to_string());
     }
 
-    if let (Some(w), Some(h)) = (instance.width, instance.height) {
-        args.push("--width".to_string());
-        args.push(w.to_string());
-        args.push("--height".to_string());
-        args.push(h.to_string());
+    let mut args = vec![
+        format!("-Xms{}M", instance.min_ram_mb),
+        format!("-Xmx{}M", instance.max_ram_mb),
+        "-Dminecraft.launcher.brand=noxara-launcher".to_string(),
+        "-Dminecraft.launcher.version=0.1.0".to_string(),
+    ];
+    args.extend(instance.extra_jvm_args.iter().cloned());
+
+    let mut game_args: Vec<String> = Vec::new();
+
+    if let Some(arguments) = &detail.arguments {
+        // Modern structured format (vanilla 1.13+, and what Forge/NeoForge version
+        // JSONs use). Includes conditional entries (rules-gated) alongside plain
+        // strings — see push_argument_entry.
+        let mut jvm_args: Vec<String> = Vec::new();
+        if let Some(jvm) = arguments.get("jvm").and_then(Value::as_array) {
+            for entry in jvm {
+                push_argument_entry(entry, &subst, &mut jvm_args);
+            }
+        }
+        // If the version JSON doesn't specify JVM args at all (shouldn't normally
+        // happen for anything modern enough to use this branch, but don't silently
+        // produce an unlaunchable command if it does), fall back to the classpath
+        // flags we'd otherwise have hardcoded.
+        if jvm_args.is_empty() {
+            jvm_args.push(format!("-Djava.library.path={}", natives_dir.display()));
+            jvm_args.push("-cp".to_string());
+            jvm_args.push(classpath.clone());
+        }
+        args.extend(jvm_args);
+        args.push(detail.main_class.clone());
+
+        if let Some(game) = arguments.get("game").and_then(Value::as_array) {
+            for entry in game {
+                push_argument_entry(entry, &subst, &mut game_args);
+            }
+        }
+    } else if let Some(legacy) = &detail.legacy_arguments {
+        // Pre-1.13 single-string minecraftArguments format.
+        args.push(format!("-Djava.library.path={}", natives_dir.display()));
+        args.push("-cp".to_string());
+        args.push(classpath.clone());
+        args.push(detail.main_class.clone());
+        for token in legacy.split_whitespace() {
+            game_args.push(substitute(token, &subst));
+        }
+    } else {
+        // Neither format present — fall back to the minimal required set so launching
+        // never silently no-ops.
+        args.push(format!("-Djava.library.path={}", natives_dir.display()));
+        args.push("-cp".to_string());
+        args.push(classpath.clone());
+        args.push(detail.main_class.clone());
+        game_args.push("--username".to_string());
+        game_args.push(account.username.clone());
+        game_args.push("--version".to_string());
+        game_args.push(detail.id.clone());
+        game_args.push("--gameDir".to_string());
+        game_args.push(instance_dir.to_string_lossy().to_string());
+        game_args.push("--assetsDir".to_string());
+        game_args.push(assets_dir.to_string_lossy().to_string());
+        game_args.push("--assetIndex".to_string());
+        game_args.push(detail.assets.clone());
+        game_args.push("--uuid".to_string());
+        game_args.push(account.uuid.clone());
+        game_args.push("--accessToken".to_string());
+        game_args.push(account.access_token.clone());
+        game_args.push("--userType".to_string());
+        game_args.push(account.user_type.clone());
+    }
+
+    args.extend(game_args);
+
+    if instance.width.is_some() && instance.height.is_some() && !args.iter().any(|a| a == "--width") {
+        // Only the legacy/fallback branches need --width/--height appended explicitly;
+        // the modern branch gets them via ${resolution_width}/${resolution_height} if
+        // (and only if) the version JSON's rules ask for them (has_custom_resolution).
+        // Vanilla/Forge version JSONs gate that behind a feature we don't set, so add
+        // them directly here too — an explicit --width/--height is always accepted by
+        // the game even when not requested by the JSON's own conditional args.
+        if detail.arguments.is_none() {
+            args.push("--width".to_string());
+            args.push(instance.width.unwrap().to_string());
+            args.push("--height".to_string());
+            args.push(instance.height.unwrap().to_string());
+        }
     }
 
     args.extend(instance.extra_game_args.iter().cloned());

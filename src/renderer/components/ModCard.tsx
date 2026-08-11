@@ -1,4 +1,5 @@
 import { Download, Users, CheckCircle2 } from "lucide-react";
+import { useState } from "react";
 import type { ModrinthSearchHit } from "@shared/types/ipc";
 
 function formatCount(n: number): string {
@@ -20,14 +21,15 @@ export function ModCard({
   onInstall: () => void;
   onOpen: () => void;
 }) {
+  const [imgFailed, setImgFailed] = useState(false);
   return (
     <div className="yz-card p-4 flex gap-3.5 hover:border-noxara-border-strong hover:-translate-y-0.5 transition-all duration-200">
       <button
         onClick={onOpen}
         className="shrink-0 w-14 h-14 rounded-md bg-noxara-elevated border border-noxara-border overflow-hidden yz-focus-ring"
       >
-        {mod.iconUrl ? (
-          <img src={mod.iconUrl} alt="" className="w-full h-full object-cover" />
+        {mod.iconUrl && !imgFailed ? (
+          <img src={mod.iconUrl} alt="" className="w-full h-full object-cover" onError={() => setImgFailed(true)} />
         ) : (
           <div className="w-full h-full flex items-center justify-center text-noxara-muted text-xs font-semibold">
             {mod.title.slice(0, 1).toUpperCase()}

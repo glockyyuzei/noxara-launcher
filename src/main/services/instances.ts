@@ -6,6 +6,7 @@ import { getDb } from "./database";
 import { instanceDir, slugifyInstanceName } from "../filesystem/paths";
 import type { CreateInstanceInput, InstanceRecord } from "../../shared/types/ipc";
 import { getLatestFabricLoaderVersion } from "./fabric";
+import { getForgeVersions } from "./forge";
 
 interface InstanceRow {
   id: string;
@@ -96,9 +97,17 @@ export async function createInstance(input: CreateInstanceInput): Promise<Instan
   if (input.loader === "fabric" && (!resolvedLoaderVersion || resolvedLoaderVersion === "latest")) {
     resolvedLoaderVersion = await getLatestFabricLoaderVersion(input.minecraftVersion);
   } else if (input.loader === "forge") {
-    throw new Error(
-      `${input.loader} installation isn't implemented yet — only Vanilla and Fabric are supported so far.`
-    );
+    // Forge's own installer/processor pipeline only actually runs on first launch (it
+    // needs a resolved Java runtime, which we don't have yet during instance creation —
+    // see launch.ts). Here we only need to pin down and validate *which* Forge build
+    // this instance is committed to, exactly like Fabric does with its loader version.
+    const forgeVersions = await getForgeVersions(input.minecraftVersion);
+    if (!resolvedLoaderVersion || resolvedLoaderVersion === "latest") {
+      const chosen = forgeVersions.find((v) => v.recommended) ?? forgeVersions.find((v) => v.latest) ?? forgeVersions[0];
+      resolvedLoaderVersion = chosen.fullVersion;
+    } else if (!forgeVersions.some((v) => v.fullVersion === resolvedLoaderVersion)) {
+      throw new Error(`Forge ${resolvedLoaderVersion} is not a published build for Minecraft ${input.minecraftVersion}`);
+    }
   }
 
   const id = randomUUID();
