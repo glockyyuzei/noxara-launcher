@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-electron/
+release/
+native/rust/target/
+*.db
+*.db-journal
+*.db-wal
+.DS_Store
+.env
+.env.*
+*.log

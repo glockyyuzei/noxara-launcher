@@ -1,0 +1,361 @@
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { Play, Copy, FolderOpen, Trash2, Search, X, RefreshCw } from "lucide-react";
+import type { InstanceRecord, ModrinthSearchHit } from "@shared/types/ipc";
+import { useLaunchStore } from "../stores/useLaunchStore";
+import { useModStore } from "../stores/useModStore";
+import { InstanceCover } from "../components/InstanceCover";
+import { toast } from "../stores/useToastStore";
+
+const TABS = ["Overview", "Mods", "Logs"] as const;
+
+export default function InstanceDetailPage() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [instance, setInstance] = useState<InstanceRecord | null>(null);
+  const [tab, setTab] = useState<(typeof TABS)[number]>("Overview");
+  const [launching, setLaunching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  const logs = useLaunchStore((s) => (id ? s.logsByInstance[id] ?? [] : []));
+  const running = useLaunchStore((s) => (id ? s.runningInstanceIds.has(id) : false));
+
+  useEffect(() => {
+    if (!id) return;
+    window.noxara.listInstances().then((list) => setInstance(list.find((i) => i.id === id) ?? null));
+  }, [id]);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [logs]);
+
+  async function handlePlay() {
+    if (!id) return;
+    setError(null);
+    setLaunching(true);
+    try {
+      await window.noxara.launchInstance(id);
+      setTab("Logs");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to launch");
+    } finally {
+      setLaunching(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!id) return;
+    await window.noxara.deleteInstance(id);
+    navigate("/instances");
+  }
+
+  async function handleDuplicate() {
+    if (!id || !instance) return;
+    const copy = await window.noxara.duplicateInstance(id, `${instance.name} Copy`);
+    navigate(`/instances/${copy.id}`);
+  }
+
+  if (!instance) {
+    return <div className="p-8 text-sm text-noxara-muted">Loading…</div>;
+  }
+
+  return (
+    <div className="p-6 md:p-10 max-w-5xl mx-auto">
+      <div className="relative rounded-md overflow-hidden border border-noxara-border mb-6 h-48 md:h-56">
+        <InstanceCover name={instance.name} className="absolute inset-0 rounded-none border-0" />
+        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent" />
+        <div className="relative h-full flex items-end justify-between p-5 md:p-6">
+          <div>
+            <h1 className="text-xl md:text-2xl font-semibold text-noxara-white">{instance.name}</h1>
+            <p className="text-sm text-noxara-subtle mt-1">
+              Minecraft {instance.minecraftVersion} · {instance.loader === "vanilla" ? "Vanilla" : instance.loader}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={handlePlay} disabled={launching || running} className="yz-btn-primary">
+              <Play size={16} />
+              {running ? "Running" : launching ? "Launching…" : "Play"}
+            </button>
+            <button onClick={handleDuplicate} className="yz-btn-secondary bg-black/30 backdrop-blur-sm" title="Duplicate">
+              <Copy size={16} />
+            </button>
+            <button
+              onClick={() => id && window.noxara.openInstanceFolder(id)}
+              className="yz-btn-secondary bg-black/30 backdrop-blur-sm"
+              title="Open Folder"
+            >
+              <FolderOpen size={16} />
+            </button>
+            <button onClick={() => setConfirmDelete(true)} className="yz-btn-danger bg-black/30 backdrop-blur-sm" title="Delete">
+              <Trash2 size={16} />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mb-6 yz-card border-noxara-error/40 bg-noxara-error/5 px-4 py-3 text-sm text-noxara-error">
+          {error}
+        </div>
+      )}
+
+      <div className="flex gap-1 border-b border-noxara-border mb-4">
+        {TABS.map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`px-3 py-2 text-sm border-b-2 transition-colors ${
+              tab === t ? "border-noxara-white text-noxara-white" : "border-transparent text-noxara-muted hover:text-noxara-text"
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === "Overview" && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <InfoRow label="Java" value={instance.javaPath ?? "Auto-detected"} />
+          <InfoRow label="Memory" value={`${instance.minRamMb} – ${instance.maxRamMb} MB`} />
+          <InfoRow label="Created" value={new Date(instance.createdAt).toLocaleDateString()} />
+          <InfoRow label="Last Played" value={instance.lastPlayedAt ? new Date(instance.lastPlayedAt).toLocaleString() : "Never"} />
+        </div>
+      )}
+
+      {tab === "Mods" && instance && <InstanceModsTab instance={instance} />}
+
+      {tab === "Logs" && (
+        <div
+          ref={logRef}
+          className="yz-card p-3 h-96 overflow-y-auto font-mono text-xs text-noxara-subtle whitespace-pre-wrap"
+        >
+          {logs.length === 0 ? (
+            <p className="text-noxara-muted">No output yet. Launch the instance to see live logs here.</p>
+          ) : (
+            logs.map((line, idx) => <div key={idx}>{line}</div>)
+          )}
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="yz-card p-6 max-w-sm">
+            <h2 className="text-sm font-semibold mb-2">Delete {instance.name}?</h2>
+            <p className="text-sm text-noxara-muted mb-5">
+              This removes mods, configs, worlds, screenshots, and settings for this instance. This can't be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDelete(false)} className="yz-btn-ghost">Cancel</button>
+              <button onClick={handleDelete} className="yz-btn-danger">Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InfoRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="yz-card px-4 py-3">
+      <div className="yz-label mb-1">{label}</div>
+      <div className="text-sm text-noxara-text">{value}</div>
+    </div>
+  );
+}
+
+function InstanceModsTab({ instance }: { instance: InstanceRecord }) {
+  const {
+    query,
+    hits,
+    searching,
+    searchError,
+    installedByInstance,
+    installingKeys,
+    updatesByInstance,
+    setQuery,
+    search,
+    install,
+    remove,
+    refreshInstalled,
+    checkUpdates,
+  } = useModStore();
+
+  const installed = installedByInstance[instance.id] ?? [];
+  const updates = updatesByInstance[instance.id] ?? [];
+  const isVanilla = instance.loader === "vanilla";
+
+  useEffect(() => {
+    refreshInstalled(instance.id);
+    checkUpdates(instance.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instance.id]);
+
+  useEffect(() => {
+    const t = setTimeout(() => search(), 350);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  async function handleInstall(mod: ModrinthSearchHit) {
+    try {
+      const versions = await window.noxara.getModVersions(
+        mod.projectId,
+        instance.loader as never,
+        instance.minecraftVersion
+      );
+      const best = versions[0];
+      if (!best) {
+        toast.error("No compatible version", `${mod.title} has no version for ${instance.minecraftVersion} ${instance.loader}.`);
+        return;
+      }
+      await install(instance.id, mod.projectId, best.id);
+      toast.success("Mod installed", `${mod.title} added to ${instance.name}`);
+    } catch (e) {
+      toast.error("Couldn't install mod", e instanceof Error ? e.message : undefined);
+    }
+  }
+
+  async function handleRemove(modId: string, name: string) {
+    try {
+      await remove(instance.id, modId);
+      toast.success("Mod removed", name);
+    } catch (e) {
+      toast.error("Couldn't remove mod", e instanceof Error ? e.message : undefined);
+    }
+  }
+
+  if (isVanilla) {
+    return (
+      <div className="yz-card p-10 text-center text-sm text-noxara-muted">
+        Vanilla instances can't run mods. Create a Fabric or Forge instance to
+        install mods.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {updates.length > 0 && (
+        <div className="yz-card p-4 border-noxara-border-strong">
+          <p className="text-xs yz-label mb-2">Updates Available</p>
+          {updates.map((u) => (
+            <div key={u.modId} className="flex items-center justify-between py-1.5 text-sm">
+              <span className="text-noxara-text">
+                {u.currentVersion} → {u.latestVersion.versionNumber}
+              </span>
+              <button
+                onClick={() => install(instance.id, u.latestVersion.projectId, u.latestVersion.id)}
+                className="yz-btn-secondary text-xs px-2.5 py-1"
+              >
+                Update
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-sm font-semibold text-noxara-text">Installed Mods</h3>
+          <button
+            onClick={() => checkUpdates(instance.id)}
+            className="text-noxara-muted hover:text-noxara-text transition-colors"
+            aria-label="Check for updates"
+          >
+            <RefreshCw size={14} />
+          </button>
+        </div>
+        {installed.length === 0 ? (
+          <div className="yz-card p-6 text-center text-sm text-noxara-muted">
+            This instance doesn't have any mods yet. Search below to add some.
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {installed.map((mod) => (
+              <div key={mod.id} className="yz-card px-3.5 py-2.5 flex items-center justify-between">
+                <div className="min-w-0">
+                  <div className="text-sm text-noxara-text truncate">{mod.name}</div>
+                  <div className="text-xs text-noxara-muted">
+                    {mod.version} {!mod.fileExists && "· file missing"}
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleRemove(mod.id, mod.name)}
+                  className="yz-btn-ghost text-xs px-2 py-1"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <h3 className="text-sm font-semibold text-noxara-text mb-2">Add Mod</h3>
+        <div className="relative mb-3">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-noxara-muted" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search Modrinth…"
+            className="yz-input w-full pl-9 pr-9"
+          />
+          {query && (
+            <button
+              onClick={() => setQuery("")}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-noxara-muted hover:text-noxara-text"
+              aria-label="Clear"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {searching ? (
+          <div className="space-y-2">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="yz-skeleton h-16 rounded-md" />
+            ))}
+          </div>
+        ) : searchError ? (
+          <p className="text-sm text-noxara-error">{searchError}</p>
+        ) : (
+          <div className="space-y-1.5">
+            {hits.map((mod) => {
+              const already = installed.some((m) => m.sourceId === mod.projectId);
+              const key = `${instance.id}:${mod.projectId}`;
+              return (
+                <div key={mod.projectId} className="yz-card px-3.5 py-2.5 flex items-center justify-between gap-3">
+                  <div className="min-w-0 flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded bg-noxara-elevated border border-noxara-border overflow-hidden shrink-0">
+                      {mod.iconUrl && <img src={mod.iconUrl} alt="" className="w-full h-full object-cover" />}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm text-noxara-text truncate">{mod.title}</div>
+                      <div className="text-xs text-noxara-muted truncate">{mod.description}</div>
+                    </div>
+                  </div>
+                  {already ? (
+                    <span className="text-xs text-noxara-success shrink-0">Installed</span>
+                  ) : (
+                    <button
+                      onClick={() => handleInstall(mod)}
+                      disabled={installingKeys.has(key)}
+                      className="yz-btn-secondary text-xs px-2.5 py-1 shrink-0"
+                    >
+                      {installingKeys.has(key) ? "…" : "Add"}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    @apply border-noxara-border;
+  }
+  body {
+    @apply select-none;
+  }
+  input,
+  textarea,
+  button {
+    @apply select-text;
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-noxara-border-strong rounded-sm;
+  }
+}
+
+@layer components {
+  .titlebar-drag {
+    -webkit-app-region: drag;
+  }
+  .titlebar-no-drag {
+    -webkit-app-region: no-drag;
+  }
+
+  .yz-btn {
+    @apply inline-flex items-center justify-center gap-2 rounded text-sm font-medium
+      transition-colors duration-150 px-4 py-2 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .yz-btn-primary {
+    @apply yz-btn bg-noxara-white text-noxara-black hover:bg-noxara-text;
+  }
+  .yz-btn-secondary {
+    @apply yz-btn bg-noxara-surface text-noxara-text border border-noxara-border hover:border-noxara-border-strong hover:bg-noxara-elevated;
+  }
+  .yz-btn-ghost {
+    @apply yz-btn text-noxara-subtle hover:text-noxara-text hover:bg-noxara-surface;
+  }
+  .yz-btn-danger {
+    @apply yz-btn bg-noxara-surface text-noxara-error border border-noxara-error/30 hover:bg-noxara-error/10;
+  }
+
+  .yz-card {
+    @apply bg-noxara-surface border border-noxara-border rounded-lg;
+  }
+
+  .yz-input {
+    @apply bg-noxara-void border border-noxara-border rounded text-sm px-3 py-2 text-noxara-text
+      placeholder:text-noxara-muted focus:outline-none focus:border-noxara-border-strong transition-colors duration-150;
+  }
+
+  .yz-label {
+    @apply text-xs uppercase tracking-wide text-noxara-muted font-medium;
+  }
+
+  .yz-skeleton {
+    @apply bg-noxara-elevated rounded relative overflow-hidden;
+    background-image: linear-gradient(
+      90deg,
+      theme("colors.noxara.elevated") 0px,
+      theme("colors.noxara.border-strong") 40px,
+      theme("colors.noxara.elevated") 80px
+    );
+    background-size: 600px 100%;
+    @apply animate-shimmer;
+  }
+
+  .yz-focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-noxara-white/40 focus-visible:ring-offset-2 focus-visible:ring-offset-noxara-black;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

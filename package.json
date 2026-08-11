@@ -1,0 +1,75 @@
+{
+  "name": "noxara-launcher",
+  "version": "0.1.0",
+  "description": "Noxara Launcher — a minimalist, monochrome Minecraft launcher by Noxara Labs.",
+  "author": "Noxara Labs",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=18.0.0 <23.0.0"
+  },
+  "main": "dist/main/main.js",
+  "scripts": {
+    "postinstall": "electron-rebuild -f -w better-sqlite3,keytar",
+    "dev": "concurrently -k -n RENDERER,MAIN,PRELOAD -c blue,green,magenta \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:preload\"",
+    "dev:renderer": "vite",
+    "dev:main": "tsc-watch -p tsconfig.main.json --onSuccess \"electron .\"",
+    "dev:preload": "esbuild src/main/preload.ts --bundle --platform=node --target=node18 --format=cjs --external:electron --outfile=dist/main/preload.js --watch",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.main.json && npm run build:preload",
+    "build:preload": "esbuild src/main/preload.ts --bundle --platform=node --target=node18 --format=cjs --external:electron --outfile=dist/main/preload.js",
+    "build:rust": "cargo build --release --manifest-path native/rust/Cargo.toml",
+    "build": "npm run build:renderer && npm run build:main && npm run build:rust",
+    "package:win": "npm run build && electron-builder --win --x64",
+    "package:mac": "npm run build && electron-builder --mac --universal",
+    "package:linux": "npm run build && electron-builder --linux --x64",
+    "test": "vitest run",
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc -p tsconfig.main.json --noEmit && tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "electron-store": "^8.2.0",
+    "keytar": "^7.9.0",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.0",
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/node": "^22.5.4",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.0.1",
+    "electron": "^32.0.1",
+    "electron-builder": "^25.0.5",
+    "esbuild": "^0.23.1",
+    "eslint": "^9.9.1",
+    "postcss": "^8.4.45",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.1",
+    "tailwindcss": "^3.4.10",
+    "tsc-watch": "^6.2.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2",
+    "vitest": "^2.0.5",
+    "lucide-react": "^0.441.0"
+  },
+  "build": {
+    "appId": "dev.noxara.launcher",
+    "productName": "Noxara Launcher",
+    "files": [
+      "dist/**/*",
+      "assets/**/*"
+    ],
+    "extraResources": [
+      { "from": "native/rust/target/release/noxara-core", "to": "noxara-core", "filter": ["**/*"] }
+    ],
+    "win": { "target": "nsis", "icon": "assets/icons/icon.ico" },
+    "mac": { "target": "dmg", "icon": "assets/icons/icon.icns", "category": "public.app-category.games" },
+    "linux": { "target": ["AppImage", "deb"], "icon": "assets/icons/icon.png", "category": "Game" }
+  }
+}
