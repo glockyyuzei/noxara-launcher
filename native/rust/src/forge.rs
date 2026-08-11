@@ -15,7 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -193,7 +193,8 @@ fn read_entry_to_string(jar_path: &Path, entry_name: &str) -> Result<String> {
 fn jar_has_entry(jar_path: &Path, entry_name: &str) -> bool {
     let Ok(file) = std::fs::File::open(jar_path) else { return false };
     let Ok(mut archive) = zip::ZipArchive::new(file) else { return false };
-    archive.by_name(entry_name).is_ok()
+    let found = archive.by_name(entry_name).is_ok();
+    found
 }
 
 /// Resolves a Forge `data` table value (or a processor arg token) to a concrete string,
