@@ -26,8 +26,13 @@ import type {
   ContentDownloadProgressPayload,
   ContentDownloadCompletePayload,
   InstalledContent,
+  ModpackUpdateInfo,
+  ModpackImportInput,
+  DownloadTaskInfo,
+  DownloadTasksChangedPayload,
   ServerRecord,
   ServerInput,
+  ServerPingResult,
   LauncherSettings,
   SkinRecord,
   MicrosoftDeviceCodeInfo,
@@ -70,10 +75,20 @@ declare global {
       listInstalledContent(instanceId: string, category: ContentCategory): Promise<InstalledContent[]>;
       removeContent(instanceId: string, itemId: string, category: ContentCategory): Promise<void>;
       setContentEnabled(instanceId: string, itemId: string, category: ContentCategory, enabled: boolean): Promise<void>;
+      checkModpackUpdates(instanceId: string): Promise<ModpackUpdateInfo[]>;
+      pickModpackFile(): Promise<string | null>;
+      importModpackFromFile(mrpackPath: string, input: ModpackImportInput): Promise<InstanceRecord>;
+      pickModpackSavePath(defaultFileName: string): Promise<string | null>;
+      exportModpack(instanceId: string, destPath: string): Promise<{ exported: boolean }>;
+      listDownloadTasks(): Promise<DownloadTaskInfo[]>;
+      cancelDownload(taskId: string): Promise<void>;
+      retryDownload(taskId: string): Promise<void>;
       listServers(instanceId?: string | null): Promise<ServerRecord[]>;
       addServer(input: ServerInput): Promise<ServerRecord>;
       updateServer(id: string, input: Partial<ServerInput>): Promise<ServerRecord>;
       removeServer(id: string): Promise<void>;
+      pingServer(address: string, port: number): Promise<ServerPingResult>;
+      pickServerIcon(): Promise<string | null>;
       getSettings(): Promise<LauncherSettings>;
       setSettings(partial: Partial<LauncherSettings>): Promise<LauncherSettings>;
       pickFolder(title: string): Promise<string | null>;
@@ -98,6 +113,7 @@ declare global {
       onContentDownloadProgress(cb: (p: ContentDownloadProgressPayload) => void): () => void;
       onContentDownloadComplete(cb: (p: ContentDownloadCompletePayload) => void): () => void;
       onForgeInstallProgress(cb: (p: ForgeInstallProgressPayload) => void): () => void;
+      onDownloadTasksChanged(cb: (p: DownloadTasksChangedPayload) => void): () => void;
     };
   }
 }

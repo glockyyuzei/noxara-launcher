@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Play, X, Copy, FolderOpen, Trash2, Search, RefreshCw, Loader2 } from "lucide-react";
+import { Play, X, Copy, FolderOpen, Trash2, Search, RefreshCw, Loader2, Package } from "lucide-react";
 import type { InstanceRecord, ModrinthSearchHit } from "@shared/types/ipc";
 import { useLaunchStore, launchInstance } from "../stores/useLaunchStore";
 import { useModStore } from "../stores/useModStore";
@@ -64,6 +64,23 @@ export default function InstanceDetailPage() {
     if (!id || !instance) return;
     const copy = await window.noxara.duplicateInstance(id, `${instance.name} Copy`);
     navigate(`/instances/${copy.id}`);
+  }
+
+  const [exporting, setExporting] = useState(false);
+
+  async function handleExport() {
+    if (!instance) return;
+    setExporting(true);
+    try {
+      const destPath = await window.noxara.pickModpackSavePath(instance.name);
+      if (!destPath) return;
+      await window.noxara.exportModpack(instance.id, destPath);
+      toast.success("Modpack exported", destPath);
+    } catch (e) {
+      toast.error("Couldn't export modpack", e instanceof Error ? e.message : undefined);
+    } finally {
+      setExporting(false);
+    }
   }
 
   if (!instance) {
@@ -147,6 +164,15 @@ export default function InstanceDetailPage() {
           )}
           <button onClick={handleDuplicate} className="yz-btn-secondary" title="Duplicate" aria-label="Duplicate">
             <Copy size={16} />
+          </button>
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="yz-btn-secondary disabled:opacity-40"
+            title="Export Modpack"
+            aria-label="Export Modpack"
+          >
+            <Package size={16} />
           </button>
           <button
             onClick={() => id && window.noxara.openInstanceFolder(id)}

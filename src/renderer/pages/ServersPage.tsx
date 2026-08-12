@@ -1,13 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Star, Copy, Pencil, Trash2, Server, Play, X, Check } from "lucide-react";
-import type { InstanceRecord, ServerRecord } from "@shared/types/ipc";
+import { Plus, Star, Copy, Pencil, Trash2, Server, Play, X, Check, ImageUp, Wifi, WifiOff } from "lucide-react";
+import type { InstanceRecord, ServerPingResult, ServerRecord } from "@shared/types/ipc";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { toast } from "../stores/useToastStore";
 import { launchInstance, useLaunchStore } from "../stores/useLaunchStore";
 
 type EditorState = { mode: "add" } | { mode: "edit"; server: ServerRecord } | null;
+
+const OFFLINE_RESULT: ServerPingResult = {
+  online: false,
+  latencyMs: null,
+  versionName: null,
+  protocol: null,
+  playersOnline: null,
+  playersMax: null,
+  description: null,
+  favicon: null,
+};
 
 export default function ServersPage() {
   const [servers, setServers] = useState<ServerRecord[]>([]);
@@ -16,6 +27,7 @@ export default function ServersPage() {
   const [filter, setFilter] = useState<"all" | "global" | "scoped">("all");
   const [editor, setEditor] = useState<EditorState>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [statusById, setStatusById] = useState<Record<string, ServerPingResult>>({});
   const navigate = useNavigate();
 
   const runningIds = useLaunchStore((s) => s.runningInstanceIds);
@@ -30,6 +42,35 @@ export default function ServersPage() {
     refresh();
     window.noxara.listInstances().then(setInstances);
   }, []);
+
+  // Probes every visible server with the MC server list ping and refreshes on an
+  // interval so player counts stay live while the page is open.
+  useEffect(() => {
+    if (servers.length === 0) {
+      setStatusById({});
+      return;
+    }
+    let cancelled = false;
+    async function pingAll() {
+      const next: Record<string, ServerPingResult> = {};
+      await Promise.all(
+        servers.map(async (s) => {
+          try {
+            next[s.id] = await window.noxara.pingServer(s.address, s.port);
+          } catch {
+            next[s.id] = OFFLINE_RESULT;
+          }
+        })
+      );
+      if (!cancelled) setStatusById((prev) => ({ ...prev, ...next }));
+    }
+    pingAll();
+    const timer = setInterval(pingAll, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [servers]);
 
   const visible = useMemo(
     () =>

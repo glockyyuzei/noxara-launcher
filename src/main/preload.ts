@@ -12,6 +12,8 @@ import type {
   CreateInstanceInput,
   DownloadCompletePayload,
   DownloadProgressPayload,
+  DownloadTaskInfo,
+  DownloadTasksChangedPayload,
   ForgeInstallProgressPayload,
   GameExitPayload,
   GameOutputPayload,
@@ -21,7 +23,9 @@ import type {
   ModLoader,
   ModSearchQuery,
   MicrosoftDeviceCodeInfo,
+  ModpackImportInput,
   ServerInput,
+  ServerPingResult,
 } from "../shared/types/ipc";
 
 const api = {
@@ -76,11 +80,27 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.removeContent, instanceId, itemId, category),
   setContentEnabled: (instanceId: string, itemId: string, category: ContentCategory, enabled: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setContentEnabled, instanceId, itemId, category, enabled),
+  checkModpackUpdates: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.checkModpackUpdates, instanceId),
+
+  pickModpackFile: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.pickModpackFile),
+  importModpackFromFile: (mrpackPath: string, input: ModpackImportInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.importModpackFromFile, mrpackPath, input),
+  pickModpackSavePath: (defaultFileName: string): Promise<string | null> =>
+    ipcRenderer.invoke(IPC_CHANNELS.pickModpackSavePath, defaultFileName),
+  exportModpack: (instanceId: string, destPath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.exportModpack, instanceId, destPath),
+
+  listDownloadTasks: (): Promise<DownloadTaskInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.listDownloadTasks),
+  cancelDownload: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelDownload, taskId),
+  retryDownload: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.retryDownload, taskId),
 
   listServers: (instanceId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.listServers, instanceId),
   addServer: (input: ServerInput) => ipcRenderer.invoke(IPC_CHANNELS.addServer, input),
   updateServer: (id: string, input: Partial<ServerInput>) => ipcRenderer.invoke(IPC_CHANNELS.updateServer, id, input),
   removeServer: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.removeServer, id),
+  pingServer: (address: string, port: number): Promise<ServerPingResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.pingServer, address, port),
+  pickServerIcon: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.pickServerIcon),
 
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getSettings),
   setSettings: (partial: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.setSettings, partial),
@@ -151,6 +171,11 @@ const api = {
     const listener = (_e: unknown, payload: ForgeInstallProgressPayload) => cb(payload);
     ipcRenderer.on(IPC_CHANNELS.eventForgeInstallProgress, listener);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.eventForgeInstallProgress, listener);
+  },
+  onDownloadTasksChanged: (cb: (payload: DownloadTasksChangedPayload) => void) => {
+    const listener = (_e: unknown, payload: DownloadTasksChangedPayload) => cb(payload);
+    ipcRenderer.on(IPC_CHANNELS.eventDownloadTasksChanged, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventDownloadTasksChanged, listener);
   },
 };
 

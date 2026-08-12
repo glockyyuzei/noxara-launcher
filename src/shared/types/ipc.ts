@@ -85,6 +85,19 @@ export interface DownloadCompletePayload {
   failed: string[];
 }
 
+/** A single-file download (mod / content) that the user can Cancel or Retry. Only
+ * mod and content downloads register here — core batch downloads (client jars,
+ * libraries, assets, loader installers) are part of atomic launch/install operations
+ * and are intentionally not user-interruptible. */
+export interface DownloadTaskInfo {
+  taskId: string;
+  kind: "mod" | "content";
+}
+
+export interface DownloadTasksChangedPayload {
+  tasks: DownloadTaskInfo[];
+}
+
 export interface GameOutputPayload {
   instanceId: string;
   stream: "stdout" | "stderr";
@@ -302,6 +315,20 @@ export interface ContentDownloadCompletePayload {
   error?: string;
 }
 
+/** A newer version of an installed Modrinth modpack, for the pack update check. */
+export interface ModpackUpdateInfo {
+  contentId: string;
+  currentVersion: string;
+  latestVersion: ModrinthVersion;
+}
+
+/** User-facing options when importing a .mrpack from disk into a brand-new instance. */
+export interface ModpackImportInput {
+  name: string;
+  minRamMb: number;
+  maxRamMb: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Servers                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -316,6 +343,21 @@ export interface ServerRecord {
   /** Null means the server appears in every instance's list. */
   instanceId: string | null;
   createdAt: string;
+}
+
+/** Result of the Minecraft Server List Ping protocol probe. */
+export interface ServerPingResult {
+  online: boolean;
+  /** Round-trip time of the ping packet in ms, when the server answered it. */
+  latencyMs: number | null;
+  versionName: string | null;
+  protocol: number | null;
+  playersOnline: number | null;
+  playersMax: number | null;
+  /** MotD: either a plain string or the chat component JSON rendered as text. */
+  description: string | null;
+  /** Base64 data URL rendered by the client; present when the server exposes one. */
+  favicon: string | null;
 }
 
 export interface ServerInput {
@@ -426,12 +468,26 @@ export interface NoxaraApi {
   listInstalledContent(instanceId: string, category: ContentCategory): Promise<InstalledContent[]>;
   removeContent(instanceId: string, itemId: string, category: ContentCategory): Promise<void>;
   setContentEnabled(instanceId: string, itemId: string, category: ContentCategory, enabled: boolean): Promise<void>;
+  checkModpackUpdates(instanceId: string): Promise<ModpackUpdateInfo[]>;
+
+  // Modpacks (import/export .mrpack files)
+  pickModpackFile(): Promise<string | null>;
+  importModpackFromFile(mrpackPath: string, input: ModpackImportInput): Promise<InstanceRecord>;
+  pickModpackSavePath(defaultFileName: string): Promise<string | null>;
+  exportModpack(instanceId: string, destPath: string): Promise<{ exported: boolean }>;
+
+  // Download control (cancel/retry for single-file mod/content downloads)
+  listDownloadTasks(): Promise<DownloadTaskInfo[]>;
+  cancelDownload(taskId: string): Promise<void>;
+  retryDownload(taskId: string): Promise<void>;
 
   // Servers
   listServers(instanceId?: string | null): Promise<ServerRecord[]>;
   addServer(input: ServerInput): Promise<ServerRecord>;
   updateServer(id: string, input: Partial<ServerInput>): Promise<ServerRecord>;
   removeServer(id: string): Promise<void>;
+  pingServer(address: string, port: number): Promise<ServerPingResult>;
+  pickServerIcon(): Promise<string | null>;
 
   // Settings
   getSettings(): Promise<LauncherSettings>;
@@ -489,10 +545,20 @@ export const IPC_CHANNELS = {
   listInstalledContent: "noxara:content:listInstalled",
   removeContent: "noxara:content:remove",
   setContentEnabled: "noxara:content:setEnabled",
+  checkModpackUpdates: "noxara:content:checkModpackUpdates",
+  pickModpackFile: "noxara:modpacks:pickFile",
+  importModpackFromFile: "noxara:modpacks:import",
+  pickModpackSavePath: "noxara:modpacks:pickSavePath",
+  exportModpack: "noxara:modpacks:export",
+  listDownloadTasks: "noxara:downloads:listTasks",
+  cancelDownload: "noxara:downloads:cancel",
+  retryDownload: "noxara:downloads:retry",
   listServers: "noxara:servers:list",
   addServer: "noxara:servers:add",
   updateServer: "noxara:servers:update",
   removeServer: "noxara:servers:remove",
+  pingServer: "noxara:servers:ping",
+  pickServerIcon: "noxara:servers:pickIcon",
   getSettings: "noxara:settings:get",
   setSettings: "noxara:settings:set",
   pickFolder: "noxara:shell:pickFolder",
@@ -519,5 +585,6 @@ export const IPC_CHANNELS = {
   eventModDownloadComplete: "noxara:event:modDownloadComplete",
   eventContentDownloadProgress: "noxara:event:contentDownloadProgress",
   eventContentDownloadComplete: "noxara:event:contentDownloadComplete",
+  eventDownloadTasksChanged: "noxara:event:downloadTasksChanged",
   eventForgeInstallProgress: "noxara:event:forgeInstallProgress",
 } as const;

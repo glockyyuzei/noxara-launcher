@@ -13,6 +13,7 @@ import { EventEmitter } from "node:events";
 import { getDb } from "./database";
 import { getInstanceDirById, listInstances } from "./instances";
 import { assertWithin } from "../filesystem/paths";
+import { registerDownload, unregisterDownload, signalFor } from "./download-control";
 import * as modrinth from "./modrinth";
 import type {
   InstalledMod,
@@ -86,7 +87,8 @@ async function downloadWithProgress(
   modName: string,
   instanceId: string
 ): Promise<void> {
-  const res = await fetch(url);
+  // When the user hits Cancel on the Downloads page this signal aborts mid-stream.
+  const res = await fetch(url, { signal: signalFor(taskId) });
   if (!res.ok || !res.body) {
     throw new Error(`Download failed (${res.status}): ${res.statusText}`);
   }
@@ -136,6 +138,30 @@ export async function installMod(
   projectId: string,
   versionId: string
 ): Promise<InstalledMod> {
+  const taskId = randomUUID();
+  // Register the download so the Downloads page can Cancel/Retry it. Retry re-runs
+  // the whole install under the SAME taskId, so the store entry flips back to
+  // "downloading" instead of creating a duplicate row.
+  registerDownload(taskId, {
+    kind: "mod",
+    run: () => installModCore(instanceId, projectId, versionId, taskId).then(() => undefined),
+  });
+  try {
+    const mod = await installModCore(instanceId, projectId, versionId, taskId);
+    unregisterDownload(taskId);
+    return mod;
+  } catch (err) {
+    // Keep the handles registered so a failed download can be Retried from the UI.
+    throw err;
+  }
+}
+
+async function installModCore(
+  instanceId: string,
+  projectId: string,
+  versionId: string,
+  taskId: string
+): Promise<InstalledMod> {
   const { loader, gameVersion } = instanceLoaderAndVersion(instanceId);
   if (!loader) {
     throw new Error("This instance's loader doesn't support mods (vanilla instances can't run mods).");
@@ -157,7 +183,6 @@ export async function installMod(
   const safeFilename = path.basename(file.filename);
   const destPath = assertWithin(dir, safeFilename);
 
-  const taskId = randomUUID();
   try {
     await downloadWithProgress(file.url, destPath, taskId, version.name, instanceId);
   } catch (err) {

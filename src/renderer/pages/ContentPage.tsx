@@ -1,15 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Search, X, SearchX, TriangleAlert, Trash2, ToggleLeft, ToggleRight, FolderOpen } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Search, X, SearchX, TriangleAlert, Trash2, ToggleLeft, ToggleRight, FolderOpen, Upload, RefreshCw } from "lucide-react";
 import type {
   ContentCategory,
   InstanceRecord,
   ModLoader,
   ModSearchSort,
   ModrinthSearchHit,
+  ModpackUpdateInfo,
 } from "@shared/types/ipc";
 import { useContentStore, selectInstalledContent } from "../stores/useContentStore";
 import { ModCard } from "../components/ModCard";
 import { ModDetailsModal } from "../components/ModDetailsModal";
+import { ModpackImportModal } from "../components/ModpackImportModal";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { toast } from "../stores/useToastStore";
@@ -78,7 +81,11 @@ export default function ContentPage({
   const [selectedInstanceId, setSelectedInstanceId] = useState<string | "all">("all");
   const [installTarget, setInstallTarget] = useState<ModrinthSearchHit | null>(null);
   const [mcVersions, setMcVersions] = useState<string[]>([]);
+  const [importTarget, setImportTarget] = useState<string | null>(null);
+  const [packUpdates, setPackUpdates] = useState<ModpackUpdateInfo[]>([]);
+  const [updatingKeys, setUpdatingKeys] = useState<Set<string>>(new Set());
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const navigate = useNavigate();
 
   useEffect(() => {
     // The browse state is shared across every ContentPage-backed route, so always
@@ -113,6 +120,28 @@ export default function ContentPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedInstance?.id, category]);
 
+  // For modpacks: check every installed pack for a newer published version so an
+  // "Update" action appears next to ones that have one.
+  useEffect(() => {
+    if (category !== "modpack" || !selectedInstance) {
+      setPackUpdates([]);
+      return;
+    }
+    let cancelled = false;
+    window.noxara
+      .checkModpackUpdates(selectedInstance.id)
+      .then((updates) => {
+        if (!cancelled) setPackUpdates(updates);
+      })
+      .catch(() => {
+        if (!cancelled) setPackUpdates([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedInstance?.id, category]);
+
   const installed = selectedInstance ? selectInstalledContent(installedByInstance, selectedInstance.id, category) : [];
   const installableInstances = useMemo(
     () => (needsLoader ? instances.filter((i) => i.loader !== "vanilla") : instances),
@@ -126,6 +155,33 @@ export default function ContentPage({
       setInstallTarget(null);
     } catch (e) {
       toast.error(`Couldn't install ${singleName.toLowerCase()}`, e instanceof Error ? e.message : undefined);
+    }
+  }
+
+  async function handleImportStart() {
+    try {
+      const filePath = await window.noxara.pickModpackFile();
+      if (filePath) setImportTarget(filePath);
+    } catch (e) {
+      toast.error("Couldn't open modpack", e instanceof Error ? e.message : undefined);
+    }
+  }
+
+  async function handlePackUpdate(contentId: string, name: string, versionId: string) {
+    if (!selectedInstance) return;
+    const key = `${contentId}:${versionId}`;
+    setUpdatingKeys((prev) => new Set(prev).add(key));
+    try {
+      await install(selectedInstance.id, "", versionId, "modpack");
+      toast.success("Modpack updated", `${name} was reinstalled at the latest version`);
+    } catch (e) {
+      toast.error("Couldn't update modpack", e instanceof Error ? e.message : undefined);
+    } finally {
+      setUpdatingKeys((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
     }
   }
 
@@ -151,7 +207,17 @@ export default function ContentPage({
 
   return (
     <div className="p-4 md:p-6 max-w-4xl mx-auto">
-      <PageHeader title={title} subtitle={subtitle} />
+      <PageHeader
+        title={title}
+        subtitle={subtitle}
+        actions={
+          category === "modpack" ? (
+            <button onClick={handleImportStart} className="yz-btn-primary">
+              <Upload size={16} /> Import Modpack
+            </button>
+          ) : undefined
+        }
+      />
 
       <div className="flex flex-wrap items-center gap-2 mb-5">
         <label className="yz-label">Installing to</label>
@@ -191,41 +257,62 @@ export default function ContentPage({
             </div>
           ) : (
             <div className="space-y-1.5">
-              {installed.map((item) => (
-                <div key={item.id} className="yz-card px-3.5 py-2.5 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm text-noxara-text truncate">{item.name}</div>
-                    <div className="text-xs text-noxara-muted">
-                      {item.version}
-                      {!item.fileExists && <span className="text-noxara-warning"> · file missing</span>}
-                      {category === "modpack" && item.enabled && <span> · pack mods active</span>}
+              {installed.map((item) => {
+                const update = category === "modpack" ? packUpdates.find((u) => u.contentId === item.id) : undefined;
+                const updatingKey = update ? `${item.id}:${update.latestVersion.id}` : "";
+                const updating = updatingKeys.has(updatingKey);
+                return (
+                  <div key={item.id} className="yz-card px-3.5 py-2.5 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm text-noxara-text truncate">{item.name}</div>
+                      <div className="text-xs text-noxara-muted">
+                        {item.version}
+                        {!item.fileExists && <span className="text-noxara-warning"> · file missing</span>}
+                        {category === "modpack" && item.enabled && <span> · pack mods active</span>}
+                        {update && (
+                          <span className="text-noxara-white">
+                            {" "}
+                            · update: {update.latestVersion.versionNumber}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {update && (
+                        <button
+                          onClick={() => handlePackUpdate(item.id, item.name, update.latestVersion.id)}
+                          disabled={updating}
+                          className="flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors text-noxara-white bg-noxara-elevated border border-noxara-border-strong hover:bg-noxara-surface disabled:opacity-40"
+                        >
+                          <RefreshCw size={13} className={updating ? "animate-spin" : ""} />
+                          {updating ? "Updating…" : "Update"}
+                        </button>
+                      )}
+                      {category !== "modpack" && (
+                        <button
+                          onClick={() => handleToggle(item.id, item.enabled, item.name)}
+                          title={item.enabled ? "Disable" : "Enable"}
+                          className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${
+                            item.enabled
+                              ? "text-noxara-success hover:bg-noxara-success/10"
+                              : "text-noxara-muted hover:bg-noxara-surface"
+                          }`}
+                        >
+                          {item.enabled ? <ToggleRight size={15} /> : <ToggleLeft size={15} />}
+                          {item.enabled ? "Enabled" : "Disabled"}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleRemove(item.id, item.name)}
+                        className="text-noxara-muted hover:text-noxara-error p-1.5 transition-colors"
+                        aria-label={`Remove ${item.name}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    {category !== "modpack" && (
-                      <button
-                        onClick={() => handleToggle(item.id, item.enabled, item.name)}
-                        title={item.enabled ? "Disable" : "Enable"}
-                        className={`flex items-center gap-1 text-xs px-2 py-1 rounded transition-colors ${
-                          item.enabled
-                            ? "text-noxara-success hover:bg-noxara-success/10"
-                            : "text-noxara-muted hover:bg-noxara-surface"
-                        }`}
-                      >
-                        {item.enabled ? <ToggleRight size={15} /> : <ToggleLeft size={15} />}
-                        {item.enabled ? "Enabled" : "Disabled"}
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleRemove(item.id, item.name)}
-                      className="text-noxara-muted hover:text-noxara-error p-1.5 transition-colors"
-                      aria-label={`Remove ${item.name}`}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -371,6 +458,17 @@ export default function ContentPage({
           category={category}
           onInstall={handleInstall}
           onClose={() => setInstallTarget(null)}
+        />
+      )}
+
+      {importTarget && (
+        <ModpackImportModal
+          mrpackPath={importTarget}
+          onClose={() => setImportTarget(null)}
+          onImported={(instance) => {
+            setImportTarget(null);
+            navigate(`/instances/${instance.id}`);
+          }}
         />
       )}
     </div>

@@ -4,6 +4,7 @@ import type {
   ContentDownloadProgressPayload,
   DownloadCompletePayload,
   DownloadProgressPayload,
+  DownloadTasksChangedPayload,
   ModDownloadCompletePayload,
   ModDownloadProgressPayload,
   ForgeInstallProgressPayload,
@@ -53,11 +54,14 @@ export interface ForgeInstallEntry {
 interface DownloadState {
   downloads: DownloadEntry[];
   forgeInstalls: ForgeInstallEntry[];
+  /** taskIds that still have Cancel/Retry handles in the main process. */
+  retryableTaskIds: Set<string>;
   onProgress: (p: ModDownloadProgressPayload | ContentDownloadProgressPayload) => void;
   onComplete: (p: ModDownloadCompletePayload | ContentDownloadCompletePayload) => void;
   onBatchProgress: (p: DownloadProgressPayload) => void;
   onBatchComplete: (p: DownloadCompletePayload) => void;
   onForgeProgress: (p: ForgeInstallProgressPayload) => void;
+  onTasksChanged: (p: DownloadTasksChangedPayload) => void;
   clearCompleted: () => void;
 }
 
@@ -129,6 +133,7 @@ function batchChangeIsWorthRendering(prev: DownloadEntry | undefined, next: Down
 export const useDownloadStore = create<DownloadState>((set) => ({
   downloads: [],
   forgeInstalls: [],
+  retryableTaskIds: new Set(),
 
   onProgress: (p) =>
     set((state) => {
@@ -205,6 +210,9 @@ export const useDownloadStore = create<DownloadState>((set) => ({
       next[idx] = entry;
       return { forgeInstalls: next };
     }),
+
+  onTasksChanged: (p) =>
+    set({ retryableTaskIds: new Set(p.tasks.map((t) => t.taskId)) }),
 
   clearCompleted: () =>
     set((state) => ({

@@ -31,6 +31,7 @@ export default function App() {
   const onBatchProgress = useDownloadStore((s) => s.onBatchProgress);
   const onBatchComplete = useDownloadStore((s) => s.onBatchComplete);
   const onForgeProgress = useDownloadStore((s) => s.onForgeProgress);
+  const onTasksChanged = useDownloadStore((s) => s.onTasksChanged);
 
   // Load the account list once at app start so the bottom-left selector,
   // home screen, and accounts page all read from the same populated store.
@@ -71,6 +72,9 @@ export default function App() {
       onForgeProgress(p);
       if (p.stage === "complete") toast.success("Loader installed", p.message);
     });
+    const offTasksChanged = window.noxara.onDownloadTasksChanged((p) => onTasksChanged(p));
+    // Seed the retryable set once in case a download was active before the window loaded.
+    window.noxara.listDownloadTasks().then((tasks) => onTasksChanged({ tasks }));
 
     // Reconcile running state against the core's actual process registry so the UI
     // stays accurate even if a process is killed manually or crashes without events.
@@ -90,10 +94,11 @@ export default function App() {
       offContentProgress();
       offContentComplete();
       offForgeProgress();
+      offTasksChanged();
       clearInterval(pollTimer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [appendLog, markRunning, refreshRunning, onModProgress, onModComplete, onBatchProgress, onBatchComplete, onForgeProgress]);
+  }, [appendLog, markRunning, refreshRunning, onModProgress, onModComplete, onBatchProgress, onBatchComplete, onForgeProgress, onTasksChanged]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-noxara-black">

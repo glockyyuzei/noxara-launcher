@@ -1,4 +1,5 @@
 import { ipcMain, BrowserWindow, shell, dialog } from "electron";
+import fs from "node:fs";
 import { IPC_CHANNELS } from "../../shared/types/ipc";
 import type { CreateInstanceInput } from "../../shared/types/ipc";
 import { coreBridge } from "../services/core-bridge";
@@ -17,12 +18,16 @@ import * as skinsService from "../services/skins";
 import * as contentService from "../services/content";
 import * as serversService from "../services/servers";
 import * as settingsService from "../services/settings";
+import * as modpackExportService from "../services/modpack-export";
 import * as microsoftLoginService from "../services/microsoft-login";
+import { pingServer } from "../services/server-ping";
+import { cancelDownload, retryDownload, listDownloadTasks, downloadControlEvents } from "../services/download-control";
 import type {
   ContentCategory,
   LauncherSettings,
   ModLoader,
   ModSearchQuery,
+  ModpackImportInput,
   ServerInput,
 } from "../../shared/types/ipc";
 
@@ -158,6 +163,54 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       contentService.setContentEnabled(instanceId, itemId, category, enabled)
     )
   );
+  ipcMain.handle(
+    IPC_CHANNELS.checkModpackUpdates,
+    safe((_e, instanceId: string) => contentService.checkModpackUpdates(instanceId))
+  );
+
+  // Modpack import/export (.mrpack)
+  ipcMain.handle(
+    IPC_CHANNELS.pickModpackFile,
+    safe(async (): Promise<string | null> => {
+      const win = getWindow();
+      const result = await dialog.showOpenDialog(win!, {
+        title: "Import Modpack (.mrpack)",
+        properties: ["openFile"],
+        filters: [{ name: "Modrinth Modpack", extensions: ["mrpack"] }],
+      });
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    })
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.importModpackFromFile,
+    safe((_e, mrpackPath: string, input: ModpackImportInput) =>
+      contentService.importModpackFromFile(mrpackPath, input)
+    )
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.pickModpackSavePath,
+    safe(async (_e, defaultFileName: string): Promise<string | null> => {
+      const win = getWindow();
+      const safeName = (String(defaultFileName || "modpack").replace(/[^\w .-]/g, "").slice(0, 64).trim() || "modpack") + ".mrpack";
+      const result = await dialog.showSaveDialog(win!, {
+        title: "Export Modpack",
+        defaultPath: safeName,
+        filters: [{ name: "Modrinth Modpack", extensions: ["mrpack"] }],
+      });
+      return result.canceled || !result.filePath ? null : result.filePath;
+    })
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.exportModpack,
+    safe((_e, instanceId: string, destPath: string) =>
+      modpackExportService.exportModpack(instanceId, destPath)
+    )
+  );
+
+  // Download control (Cancel/Retry for single-file mod/content downloads)
+  ipcMain.handle(IPC_CHANNELS.listDownloadTasks, safe(() => listDownloadTasks()));
+  ipcMain.handle(IPC_CHANNELS.cancelDownload, safe((_e, taskId: string) => cancelDownload(taskId)));
+  ipcMain.handle(IPC_CHANNELS.retryDownload, safe((_e, taskId: string) => retryDownload(taskId)));
 
   // Servers
   ipcMain.handle(
@@ -170,6 +223,32 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     safe((_e, id: string, input: Partial<ServerInput>) => serversService.updateServer(id, input))
   );
   ipcMain.handle(IPC_CHANNELS.removeServer, safe((_e, id: string) => serversService.removeServer(id)));
+  ipcMain.handle(
+    IPC_CHANNELS.pingServer,
+    safe((_e, address: string, port: number) => pingServer(address, port))
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.pickServerIcon,
+    safe(async (): Promise<string | null> => {
+      const win = getWindow();
+      const result = await dialog.showOpenDialog(win!, {
+        title: "Choose a server icon (PNG)",
+        properties: ["openFile"],
+        filters: [{ name: "PNG image", extensions: ["png"] }],
+      });
+      if (result.canceled) return null;
+      const filePath = result.filePaths[0];
+      if (!filePath) return null;
+      const buf = fs.readFileSync(filePath);
+      if (buf.length > 2 * 1024 * 1024) {
+        throw new Error("Icon must be smaller than 2 MB.");
+      }
+      if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) {
+        throw new Error("The selected file isn't a PNG image.");
+      }
+      return `data:image/png;base64,${buf.toString("base64")}`;
+    })
+  );
 
   // Settings
   ipcMain.handle(IPC_CHANNELS.getSettings, safe(() => settingsService.getSettings()));
@@ -252,4 +331,9 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   // Content downloads (resource packs / shaders / modpacks) also run in Node.
   contentService.contentDownloadEvents.on("progress", forward(IPC_CHANNELS.eventContentDownloadProgress));
   contentService.contentDownloadEvents.on("complete", forward(IPC_CHANNELS.eventContentDownloadComplete));
+
+  // Keep the renderer's Downloads page in sync with which tasks can be cancelled/retried.
+  const forwardTasks = () =>
+    getWindow()?.webContents.send(IPC_CHANNELS.eventDownloadTasksChanged, { tasks: listDownloadTasks() });
+  downloadControlEvents.on("changed", forwardTasks);
 }

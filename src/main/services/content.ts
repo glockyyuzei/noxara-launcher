@@ -20,14 +20,18 @@ import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { getDb } from "./database";
-import { getInstanceDirById, listInstances } from "./instances";
-import { assertWithin } from "../filesystem/paths";
+import { getInstanceDirById, listInstances, createInstance } from "./instances";
+import { assertWithin, rootDir } from "../filesystem/paths";
+import { registerDownload, unregisterDownload, signalFor } from "./download-control";
 import { coreBridge } from "./core-bridge";
 import * as modrinth from "./modrinth";
 import type {
   ContentCategory,
+  InstanceRecord,
   InstalledContent,
   ModLoader,
+  ModpackImportInput,
+  ModpackUpdateInfo,
   ModrinthVersion,
 } from "../../shared/types/ipc";
 
@@ -117,7 +121,8 @@ async function downloadWithProgress(
   category: ContentCategory,
   instanceId: string
 ): Promise<void> {
-  const res = await fetch(url);
+  // When the user hits Cancel on the Downloads page this signal aborts mid-stream.
+  const res = await fetch(url, { signal: signalFor(taskId) });
   if (!res.ok || !res.body) {
     throw new Error(`Download failed (${res.status}): ${res.statusText}`);
   }
@@ -180,7 +185,7 @@ function sha1OfTmp(buf: Buffer): string {
 }
 
 async function installModpack(instanceId: string, version: ModrinthVersion): Promise<InstalledContent> {
-  const { loader, gameVersion } = instanceLoaderAndVersion(instanceId);
+  const { loader } = instanceLoaderAndVersion(instanceId);
   if (!loader) {
     throw new Error("Modpacks require a Fabric or Forge instance.");
   }
@@ -190,18 +195,94 @@ async function installModpack(instanceId: string, version: ModrinthVersion): Pro
     );
   }
 
+  const contentId = randomUUID();
+  const taskId = randomUUID();
+  // Register so the Downloads page can Cancel the .mrpack download / Retry the whole
+  // pack install under the SAME taskId.
+  registerDownload(taskId, {
+    kind: "content",
+    run: () => installModpackCore(instanceId, version, contentId, taskId).then(() => undefined),
+  });
+  try {
+    const result = await installModpackCore(instanceId, version, contentId, taskId);
+    unregisterDownload(taskId);
+    return result;
+  } catch (err) {
+    // Keep the handles registered so a failed install can be Retried from the UI.
+    throw err;
+  }
+}
+
+async function installModpackCore(
+  instanceId: string,
+  version: ModrinthVersion,
+  contentId: string,
+  taskId: string
+): Promise<InstalledContent> {
+  const { loader, gameVersion } = instanceLoaderAndVersion(instanceId);
   const file = version.files.find((f) => f.primary) ?? version.files[0];
   if (!file) throw new Error("This modpack version has no downloadable file.");
 
-  const instanceDir = getInstanceDirById(instanceId);
-  const staging = modpackStagingDir(instanceDir);
-  const id = randomUUID();
-  const mrpackPath = path.join(staging, `${id}.mrpack`);
-  const extractDir = path.join(staging, `${id}-extracted`);
-  const taskId = randomUUID();
-
+  const mrpackPath = path.join(modpackStagingDir(getInstanceDirById(instanceId)), `${contentId}.mrpack`);
   try {
     await downloadWithProgress(file.url, mrpackPath, taskId, version.name, "modpack", instanceId);
+    const result = await installMrpackContents(instanceId, mrpackPath, {
+      contentId,
+      gameVersion,
+      loader,
+      meta: {
+        taskId,
+        packName: version.name,
+        versionNumber: version.versionNumber,
+        source: "modrinth",
+        sourceId: version.projectId,
+        sourceVersionId: version.id,
+      },
+    });
+    contentDownloadEvents.emit("complete", { taskId, category: "modpack", success: true });
+    return result;
+  } catch (err) {
+    fs.rmSync(mrpackPath, { force: true });
+    contentDownloadEvents.emit("complete", {
+      taskId,
+      category: "modpack",
+      success: false,
+      error: err instanceof Error ? err.message : "Modpack install failed",
+    });
+    throw err;
+  }
+}
+
+interface MrpackInstallOptions {
+  contentId: string;
+  gameVersion: string;
+  loader: ModLoader | null;
+  meta: {
+    taskId: string;
+    packName: string;
+    versionNumber: string;
+    source: "modrinth" | "local";
+    sourceId: string | null;
+    sourceVersionId: string | null;
+  };
+}
+
+/** Installs a .mrpack archive that is already on disk: extracts it (path-traversal
+ * safe via noxara-core), merges `overrides/` into the instance, downloads every
+ * client-supported mod listed in the manifest, and records the pack in `content_items`
+ * (upserting by source_id so reinstalling/updating a pack replaces its old files). */
+async function installMrpackContents(
+  instanceId: string,
+  mrpackPath: string,
+  opts: MrpackInstallOptions
+): Promise<InstalledContent> {
+  const instanceDir = getInstanceDirById(instanceId);
+  const staging = modpackStagingDir(instanceDir);
+  const extractDir = path.join(staging, `${opts.contentId}.extracted`);
+  const createdModIds: string[] = [];
+  let contentId = opts.contentId;
+
+  try {
     await coreBridge.call<{ entries: string[] }>(
       "modpack.extract",
       { zipPath: mrpackPath, destDir: extractDir },
@@ -232,6 +313,24 @@ async function installModpack(instanceId: string, version: ModrinthVersion): Pro
     }
 
     const db = getDb();
+
+    // Updating/reinstalling a pack that's already present (same source_id) must first
+    // remove its tracked files so an update never leaves stale mods or overrides behind.
+    if (opts.meta.sourceId) {
+      const existing = db
+        .prepare("SELECT * FROM content_items WHERE instance_id = ? AND category = 'modpack' AND source_id = ?")
+        .get(instanceId, opts.meta.sourceId) as ContentRow | undefined;
+      if (existing) {
+        uninstallModpack(instanceId, existing);
+        contentId = existing.id;
+        const wanted = path.join(staging, `${contentId}.mrpack`);
+        if (path.resolve(mrpackPath) !== path.resolve(wanted)) {
+          fs.renameSync(mrpackPath, wanted);
+        }
+        mrpackPath = wanted;
+      }
+    }
+
     const installedFiles: Array<{ path: string; sha1: string | null; size: number }> = [];
 
     for (const entry of manifest.files ?? []) {
@@ -251,6 +350,7 @@ async function installModpack(instanceId: string, version: ModrinthVersion): Pro
       installedFiles.push({ path: relPath, sha1: actualSha1, size: entry.fileSize ?? 0 });
 
       const modId = randomUUID();
+      createdModIds.push(modId);
       db.prepare(
         `INSERT INTO mods (id, instance_id, name, version, source, source_id, source_version_id, filename, enabled, sha1, game_version, loader)
          VALUES (?, ?, ?, ?, 'modpack', ?, ?, ?, 1, ?, ?, ?)`
@@ -258,31 +358,31 @@ async function installModpack(instanceId: string, version: ModrinthVersion): Pro
         modId,
         instanceId,
         entry.path.split("/").pop()?.replace(/\.(jar|zip)$/i, "") || "pack mod",
-        version.versionNumber,
-        version.projectId,
+        opts.meta.versionNumber,
+        opts.meta.sourceId,
         entry.hashes?.sha1 ?? null,
         safeFilename,
         actualSha1,
-        gameVersion,
-        loader
+        opts.gameVersion,
+        opts.loader
       );
     }
 
-    const packName = manifest.name || version.name.split(" ")[0] || "Modpack";
+    const packName = manifest.name || opts.meta.packName;
     const row: ContentRow = {
-      id,
+      id: contentId,
       instance_id: instanceId,
       category: "modpack",
       name: packName,
-      version: version.versionNumber,
-      source: "modrinth",
-      source_id: version.projectId,
-      source_version_id: version.id,
-      filename: path.basename(file.filename),
+      version: opts.meta.versionNumber,
+      source: opts.meta.source,
+      source_id: opts.meta.sourceId,
+      source_version_id: opts.meta.sourceVersionId,
+      filename: path.basename(mrpackPath),
       enabled: 1,
-      sha1: file.sha1 ?? null,
-      game_version: gameVersion,
-      loader,
+      sha1: null,
+      game_version: opts.gameVersion,
+      loader: opts.loader,
       manifest: JSON.stringify({ files: installedFiles, overrides: relativeTree(overridesDir) }),
     };
 
@@ -291,25 +391,164 @@ async function installModpack(instanceId: string, version: ModrinthVersion): Pro
         (id, instance_id, category, name, version, source, source_id, source_version_id,
          filename, enabled, sha1, game_version, loader, manifest)
        VALUES (@id, @instance_id, @category, @name, @version, @source, @source_id, @source_version_id,
-               @filename, @enabled, @sha1, @game_version, @loader, @manifest)`
+               @filename, @enabled, @sha1, @game_version, @loader, @manifest)
+       ON CONFLICT(id) DO UPDATE SET
+         name = @name, version = @version, source = @source, source_id = @source_id,
+         source_version_id = @source_version_id, filename = @filename, enabled = @enabled,
+         sha1 = @sha1, game_version = @game_version, loader = @loader, manifest = @manifest`
     ).run(row);
 
     // Keep the mrpack around so `fileExists` stays accurate; the extracted tree is temporary.
     fs.rmSync(extractDir, { recursive: true, force: true });
 
-    contentDownloadEvents.emit("complete", { taskId, category: "modpack", success: true });
     return rowToRecord(row);
   } catch (err) {
-    fs.rmSync(mrpackPath, { force: true });
     fs.rmSync(extractDir, { recursive: true, force: true });
-    contentDownloadEvents.emit("complete", {
-      taskId,
-      category: "modpack",
-      success: false,
-      error: err instanceof Error ? err.message : "Modpack install failed",
-    });
+    // Remove any mod rows we created before failing (never rows from an earlier run).
+    if (createdModIds.length > 0) {
+      const db = getDb();
+      for (const modId of createdModIds) {
+        db.prepare("DELETE FROM mods WHERE id = ? AND source = 'modpack'").run(modId);
+      }
+    }
     throw err;
   }
+}
+
+/** Checks whether any installed Modrinth modpack has a newer published version for the
+ * instance's loader + game version, mirroring the mods update check. */
+export async function checkModpackUpdates(instanceId: string): Promise<ModpackUpdateInfo[]> {
+  const { loader, gameVersion } = instanceLoaderAndVersion(instanceId);
+
+  const installed = listInstalledContent(instanceId, "modpack").filter(
+    (c) => c.source === "modrinth" && c.sourceId && c.sourceVersionId
+  );
+
+  const updates: ModpackUpdateInfo[] = [];
+  for (const pack of installed) {
+    try {
+      const versions = await modrinth.getProjectVersions(pack.sourceId!, loader ?? undefined, gameVersion);
+      const latest = versions[0]; // Modrinth returns newest-first.
+      if (latest && latest.id !== pack.sourceVersionId) {
+        updates.push({ contentId: pack.id, currentVersion: pack.version, latestVersion: latest });
+      }
+    } catch {
+      // Skip packs whose project lookup fails (e.g. removed from Modrinth).
+      continue;
+    }
+  }
+  return updates;
+}
+
+/** Reads a dependency's pinned version from an mrpack manifest, normalizing wildcards
+ * ("*" / "latest") to null so the instance resolves the loader's recommended build. */
+function normalizeDependency(value: string | undefined): string | null {
+  if (!value || value === "*" || value === "latest") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function loaderFromDependencies(deps: Record<string, string>): {
+  loader: InstanceRecord["loader"];
+  loaderVersion: string | null;
+} {
+  if (deps["fabric-loader"]) return { loader: "fabric", loaderVersion: normalizeDependency(deps["fabric-loader"]) };
+  if (deps["quilt-loader"]) return { loader: "quilt", loaderVersion: normalizeDependency(deps["quilt-loader"]) };
+  if (deps["neoforge"]) return { loader: "neoforge", loaderVersion: normalizeDependency(deps["neoforge"]) };
+  if (deps["forge"]) return { loader: "forge", loaderVersion: normalizeDependency(deps["forge"]) };
+  return { loader: "vanilla", loaderVersion: null };
+}
+
+/**
+ * Imports a .mrpack file picked from disk: reads its manifest to learn the Minecraft
+ * version + loader, creates a brand-new instance, then installs the pack into it the
+ * same way an online Modrinth modpack install does. The source file is copied into the
+ * instance's staging area so uninstalling the pack later removes exactly its files.
+ */
+export async function importModpackFromFile(
+  mrpackPath: string,
+  input: ModpackImportInput
+): Promise<InstanceRecord> {
+  if (!fs.existsSync(mrpackPath) || !mrpackPath.toLowerCase().endsWith(".mrpack")) {
+    throw new Error("Please choose a valid .mrpack file.");
+  }
+
+  const contentId = randomUUID();
+  const probeDir = path.join(rootDir(), ".noxara", "imports", contentId);
+  fs.mkdirSync(probeDir, { recursive: true });
+
+  let manifest: {
+    name?: string;
+    versionId?: string;
+    dependencies?: Record<string, string>;
+    files?: Array<{ path: string }>;
+  };
+  try {
+    await coreBridge.call<{ entries: string[] }>("modpack.extract", { zipPath: mrpackPath, destDir: probeDir }, 120_000);
+    const indexPath = path.join(probeDir, "modrinth.index.json");
+    if (!fs.existsSync(indexPath)) {
+      throw new Error("This .mrpack is missing its modrinth.index.json manifest.");
+    }
+    manifest = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : "Couldn't read this modpack archive.");
+  } finally {
+    fs.rmSync(probeDir, { recursive: true, force: true });
+  }
+
+  const deps = manifest.dependencies ?? {};
+  const minecraftVersion = deps.minecraft;
+  if (!minecraftVersion) {
+    throw new Error("This modpack doesn't declare its Minecraft version, so the launcher can't create an instance for it.");
+  }
+  const { loader, loaderVersion } = loaderFromDependencies(deps);
+
+  const packName = input.name.trim() || manifest.name?.trim() || "Imported Modpack";
+  const baseInput = {
+    name: packName,
+    minecraftVersion,
+    loader,
+    minRamMb: input.minRamMb,
+    maxRamMb: input.maxRamMb,
+  };
+
+  // `createInstance` validates pinned Forge/NeoForge builds against published versions;
+  // if a pack pins something the registry no longer lists, fall back to the recommended
+  // build rather than failing the whole import.
+  let instance: InstanceRecord;
+  try {
+    instance = await createInstance({
+      ...baseInput,
+      loaderVersion: loaderVersion ?? (loader === "vanilla" ? null : "latest"),
+    });
+  } catch (err) {
+    if (loader === "forge" || loader === "neoforge") {
+      instance = await createInstance({ ...baseInput, loaderVersion: "latest" });
+    } else {
+      throw err;
+    }
+  }
+
+  const instancePath = getInstanceDirById(instance.id);
+  const staging = modpackStagingDir(instancePath);
+  const target = path.join(staging, `${contentId}.mrpack`);
+  fs.copyFileSync(mrpackPath, target);
+
+  await installMrpackContents(instance.id, target, {
+    contentId,
+    gameVersion: instance.minecraftVersion,
+    loader: loader === "vanilla" ? null : loader,
+    meta: {
+      taskId: randomUUID(),
+      packName: manifest.name ?? packName,
+      versionNumber: manifest.versionId ?? "unknown",
+      source: "local",
+      sourceId: null,
+      sourceVersionId: null,
+    },
+  });
+
+  return instance;
 }
 
 function copyDirInto(src: string, dest: string, skipTop: (rel: string) => boolean): void {
@@ -390,11 +629,34 @@ export async function installContent(
   category: ContentCategory
 ): Promise<InstalledContent> {
   const version = await modrinth.getVersion(versionId);
-  const { gameVersion } = instanceLoaderAndVersion(instanceId);
 
   if (category === "modpack") {
     return installModpack(instanceId, version);
   }
+
+  const taskId = randomUUID();
+  // Register so the Downloads page can Cancel/Retry the single-file download.
+  registerDownload(taskId, {
+    kind: "content",
+    run: () => installSingleFileCore(instanceId, version, category, taskId).then(() => undefined),
+  });
+  try {
+    const result = await installSingleFileCore(instanceId, version, category, taskId);
+    unregisterDownload(taskId);
+    return result;
+  } catch (err) {
+    // Keep the handles registered so a failed download can be Retried from the UI.
+    throw err;
+  }
+}
+
+async function installSingleFileCore(
+  instanceId: string,
+  version: ModrinthVersion,
+  category: ContentCategory,
+  taskId: string
+): Promise<InstalledContent> {
+  const { gameVersion } = instanceLoaderAndVersion(instanceId);
 
   const file = version.files.find((f) => f.primary) ?? version.files[0];
   if (!file) throw new Error("This version has no downloadable file.");
@@ -403,7 +665,6 @@ export async function installContent(
   const safeFilename = path.basename(file.filename);
   const destPath = assertWithin(dir, safeFilename);
 
-  const taskId = randomUUID();
   try {
     await downloadWithProgress(file.url, destPath, taskId, version.name, category, instanceId);
   } catch (err) {

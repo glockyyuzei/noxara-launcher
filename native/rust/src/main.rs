@@ -496,6 +496,26 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
             Ok(json!({ "entries": entries }))
         }
 
+        "modpack.create" => {
+            let zip_path = req
+                .params
+                .get("zipPath")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing zipPath"))?;
+            let index_path = req
+                .params
+                .get("indexPath")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing indexPath"))?;
+            let overrides_dir = req
+                .params
+                .get("overridesDir")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing overridesDir"))?;
+            modpack::create(zip_path, index_path, overrides_dir).await?;
+            Ok(json!({ "created": true }))
+        }
+
         "natives.extract" => {
             let jar_paths: Vec<std::path::PathBuf> = req
                 .params
