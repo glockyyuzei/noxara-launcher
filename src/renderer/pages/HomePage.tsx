@@ -95,7 +95,7 @@ function HeroBanner() {
       <div className="relative flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 px-5 py-6 md:px-7 md:py-7">
         <div className="min-w-0">
           <div className="flex items-center gap-1.5 mb-1.5">
-            <span className="text-[10px] yz-label">Your Minecraft instances</span>
+            <span className="text-[10px] yz-label">www.noxara.com</span>
           </div>
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-noxara-white">
             <span className="opacity-90">NOXARA</span>
