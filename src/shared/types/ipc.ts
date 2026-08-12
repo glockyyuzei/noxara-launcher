@@ -12,11 +12,13 @@ export interface JavaInstallation {
   is64bit: boolean;
 }
 
+export type InstanceLoader = "vanilla" | "fabric" | "forge" | "neoforge" | "quilt";
+
 export interface InstanceRecord {
   id: string;
   name: string;
   minecraftVersion: string;
-  loader: "vanilla" | "fabric" | "forge";
+  loader: InstanceLoader;
   loaderVersion: string | null;
   javaPath: string | null;
   minRamMb: number;
@@ -126,6 +128,27 @@ export interface FabricLoaderVersion {
   separator?: string | null;
 }
 
+/** Quilt Loader builds from Quilt's meta API (same shape as Fabric's). */
+export interface QuiltLoaderVersion {
+  version: string;
+  stable: boolean;
+  build: number | null;
+  maven: string;
+  separator?: string | null;
+}
+
+/** NeoForge builds, mirroring Forge's shape exactly (installation uses the same
+ * Forge-style installer/processor pipeline). */
+export interface NeoForgeVersion {
+  minecraftVersion: string;
+  forgeVersion: string;
+  /** The exact "<mc>-<forge>" / "<neoforge>" string used in installer URLs — pass
+   * this back as `loaderVersion` when creating a NeoForge instance. */
+  fullVersion: string;
+  recommended: boolean;
+  latest: boolean;
+}
+
 export interface ForgeInstallProgressPayload {
   taskId: string;
   stage: "download" | "libraries" | "processing" | "finalizing" | "complete" | string;
@@ -136,7 +159,7 @@ export interface ForgeInstallProgressPayload {
 /* Modrinth / mods                                                             */
 /* -------------------------------------------------------------------------- */
 
-export type ModLoader = "fabric" | "forge";
+export type ModLoader = "fabric" | "forge" | "neoforge" | "quilt";
 
 export interface ModrinthSearchHit {
   projectId: string;
@@ -381,8 +404,14 @@ export interface NoxaraApi {
   // Forge
   getForgeVersions(mcVersion: string): Promise<ForgeVersion[]>;
 
+  // NeoForge
+  getNeoForgeVersions(mcVersion: string): Promise<NeoForgeVersion[]>;
+
   // Fabric
   getFabricLoaderVersions(mcVersion: string, forceRefresh?: boolean): Promise<FabricLoaderVersion[]>;
+
+  // Quilt
+  getQuiltLoaderVersions(mcVersion: string, forceRefresh?: boolean): Promise<QuiltLoaderVersion[]>;
 
   // Mods (Modrinth)
   searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult>;
@@ -447,7 +476,9 @@ export const IPC_CHANNELS = {
   refreshAccountProfile: "noxara:accounts:refreshProfile",
   launchInstance: "noxara:launch:start",
   getForgeVersions: "noxara:forge:getVersions",
+  getNeoForgeVersions: "noxara:neoforge:getVersions",
   getFabricLoaderVersions: "noxara:fabric:getLoaderVersions",
+  getQuiltLoaderVersions: "noxara:quilt:getLoaderVersions",
   searchMods: "noxara:mods:search",
   getModVersions: "noxara:mods:getVersions",
   installMod: "noxara:mods:install",

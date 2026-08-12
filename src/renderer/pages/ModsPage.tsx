@@ -12,6 +12,8 @@ const LOADER_TABS: { id: ModLoader | "all"; label: string }[] = [
   { id: "all", label: "All" },
   { id: "fabric", label: "Fabric" },
   { id: "forge", label: "Forge" },
+  { id: "neoforge", label: "NeoForge" },
+  { id: "quilt", label: "Quilt" },
 ];
 
 const SORT_OPTIONS: { id: ModSearchSort; label: string }[] = [

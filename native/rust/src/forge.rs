@@ -446,6 +446,10 @@ fn json_value_to_library(v: &Value) -> Option<Library> {
 ///
 /// `vanilla_client_jar` must already exist (the caller ensures vanilla assets are
 /// downloaded before calling this, exactly as it does for Fabric).
+///
+/// The same installer/processor pipeline is shared with NeoForge (its installers are
+/// Forge-derived), parameterized via `maven_group_path` / `jar_prefix` / `loader_name`
+/// so callers can point at either Maven repository and artifact naming.
 #[allow(clippy::too_many_arguments)]
 pub async fn install(
     client: &reqwest::Client,
@@ -457,6 +461,9 @@ pub async fn install(
     work_dir: &Path,
     vanilla_client_jar: &Path,
     vanilla_detail: &VersionDetail,
+    maven_group_path: &str,
+    jar_prefix: &str,
+    loader_name: &str,
 ) -> Result<VersionDetail> {
     std::fs::create_dir_all(work_dir).context("failed to create Forge install working directory")?;
 
@@ -472,34 +479,34 @@ pub async fn install(
     if marker_path.is_file() {
         if let Ok(cached) = std::fs::read_to_string(&marker_path) {
             if let Ok(detail) = serde_json::from_str::<VersionDetail>(&cached) {
-                emit_progress(task_id, "complete", "Forge already installed — reusing it");
+                emit_progress(task_id, "complete", format!("{loader_name} already installed — reusing it"));
                 return Ok(detail);
             }
         }
     }
 
     let installer_url = format!(
-        "{MAVEN_BASE}/net/minecraftforge/forge/{full_forge_version}/forge-{full_forge_version}-installer.jar"
+        "{MAVEN_BASE}/{maven_group_path}/{full_forge_version}/{jar_prefix}-{full_forge_version}-installer.jar"
     );
-    let installer_path = work_dir.join(format!("forge-{full_forge_version}-installer.jar"));
+    let installer_path = work_dir.join(format!("{jar_prefix}-{full_forge_version}-installer.jar"));
 
-    emit_progress(task_id, "download", "Downloading Forge installer…");
+    emit_progress(task_id, "download", format!("Downloading {loader_name} installer…"));
     if !installer_path.is_file() {
         let resp = client
             .get(&installer_url)
             .send()
             .await
-            .with_context(|| format!("failed to download Forge installer from {installer_url}"))?
+            .with_context(|| format!("failed to download {loader_name} installer from {installer_url}"))?
             .error_for_status()
-            .with_context(|| format!("Forge has no installer published at {installer_url} — check the Minecraft/Forge version pair"))?;
+            .with_context(|| format!("{loader_name} has no installer published at {installer_url} — check the Minecraft/loader version pair"))?;
         let bytes = resp.bytes().await?;
         std::fs::write(&installer_path, &bytes)?;
     }
 
     if !jar_has_entry(&installer_path, "install_profile.json") {
         bail!(
-            "This Forge build ({full_forge_version}) uses a legacy installer format Noxara doesn't support yet. \
-             Please pick a newer Forge build for Minecraft {mc_version}."
+            "This {loader_name} build ({full_forge_version}) uses a legacy installer format Noxara doesn't support yet. \
+             Please pick a newer {loader_name} build for Minecraft {mc_version}."
         );
     }
 
@@ -560,7 +567,7 @@ pub async fn install(
         run_processors(task_id, java_path, &processors, &data, libraries_dir).await?;
     }
 
-    emit_progress(task_id, "finalizing", "Finalizing Forge version data…");
+    emit_progress(task_id, "finalizing", format!("Finalizing {loader_name} version data…"));
 
     // Merge: forge_version_json wins where it defines a field, vanilla_detail fills the
     // rest — Forge's own version.json normally omits downloads/assetIndex/assets/
@@ -596,6 +603,6 @@ pub async fn install(
         let _ = std::fs::write(&marker_path, serialized);
     }
 
-    emit_progress(task_id, "complete", "Forge installed");
+    emit_progress(task_id, "complete", format!("{loader_name} installed"));
     Ok(merged)
 }

@@ -7,7 +7,9 @@ mod maven;
 mod modpack;
 mod mojang;
 mod natives;
+mod neoforge;
 mod protocol;
+mod quilt;
 
 use protocol::{write_event, write_response, RpcRequest, RpcResponse};
 use serde_json::json;
@@ -15,14 +17,19 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::fabric::FabricApiError;
+use crate::quilt::QuiltApiError;
 
 /// Turns any error into a stable, machine-readable RPC code. Loader services attach
-/// their own codes (e.g. `fabric.network_error`); anything that bottoms out in a
-/// `reqwest::Error` (e.g. the Mojang manifest fetch that a Fabric detail preflight
-/// performs) is reported as `network_error` so the Electron side can retry it.
+/// their own codes (e.g. `fabric.network_error`, `quilt.network_error`); anything that
+/// bottoms out in a `reqwest::Error` (e.g. the Mojang manifest fetch that a loader
+/// detail preflight performs) is reported as `network_error` so the Electron side can
+/// retry it.
 fn classify_error_code(err: &anyhow::Error) -> &'static str {
     if let Some(fabric_err) = err.downcast_ref::<FabricApiError>() {
         return fabric_err.code;
+    }
+    if let Some(quilt_err) = err.downcast_ref::<QuiltApiError>() {
+        return quilt_err.code;
     }
     if let Some(req) = err.downcast_ref::<reqwest::Error>() {
         if req.is_timeout() || req.is_connect() || req.is_request() {
@@ -147,6 +154,110 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
             Ok(json!({ "detail": merged, "recommendedJavaMajor": recommended_java }))
         }
 
+        "quilt.getLoaderVersions" => {
+            let game_version = req
+                .params
+                .get("gameVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing gameVersion"))?;
+            let versions = quilt::get_loader_versions(http, game_version).await?;
+            Ok(serde_json::to_value(versions)?)
+        }
+
+        "quilt.getVersionDetail" => {
+            let game_version = req
+                .params
+                .get("gameVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing gameVersion"))?;
+            let loader_version = req
+                .params
+                .get("loaderVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing loaderVersion"))?;
+
+            let manifest = mojang::get_version_manifest(http, false).await?;
+            let vanilla_detail = mojang::get_version_detail(http, &manifest, game_version).await?;
+            let merged = quilt::build_quilt_version_detail(http, &vanilla_detail, game_version, loader_version).await?;
+            let recommended_java = mojang::recommend_java_major(&vanilla_detail);
+            Ok(json!({ "detail": merged, "recommendedJavaMajor": recommended_java }))
+        }
+
+        "neoforge.getVersions" => {
+            let mc_version = req
+                .params
+                .get("mcVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing mcVersion"))?;
+            let versions = neoforge::get_neo_forge_versions(http, mc_version).await?;
+            Ok(serde_json::to_value(versions)?)
+        }
+
+        "neoforge.install" => {
+            let task_id = req
+                .params
+                .get("taskId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing taskId"))?
+                .to_string();
+            let mc_version = req
+                .params
+                .get("mcVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing mcVersion"))?
+                .to_string();
+            let full_version = req
+                .params
+                .get("fullVersion")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing fullVersion"))?
+                .to_string();
+            let java_path = req
+                .params
+                .get("javaPath")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing javaPath"))?
+                .to_string();
+            let libraries_dir = std::path::PathBuf::from(
+                req.params
+                    .get("librariesDir")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing librariesDir"))?,
+            );
+            let work_dir = std::path::PathBuf::from(
+                req.params
+                    .get("workDir")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing workDir"))?,
+            );
+            let vanilla_client_jar = std::path::PathBuf::from(
+                req.params
+                    .get("vanillaClientJar")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing vanillaClientJar"))?,
+            );
+            let vanilla_detail: mojang::VersionDetail = serde_json::from_value(
+                req.params
+                    .get("vanillaDetail")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("missing vanillaDetail"))?,
+            )?;
+
+            let merged = neoforge::install(
+                http,
+                &task_id,
+                &mc_version,
+                &full_version,
+                &java_path,
+                &libraries_dir,
+                &work_dir,
+                &vanilla_client_jar,
+                &vanilla_detail,
+            )
+            .await?;
+            Ok(json!({ "detail": merged }))
+        }
+
         "forge.getVersions" => {
             let mc_version = req
                 .params
@@ -217,6 +328,18 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
                 &work_dir,
                 &vanilla_client_jar,
                 &vanilla_detail,
+                req.params
+                    .get("mavenGroupPath")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("net/minecraftforge/forge"),
+                req.params
+                    .get("jarPrefix")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("forge"),
+                req.params
+                    .get("loaderName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Forge"),
             )
             .await?;
             Ok(json!({ "detail": merged }))

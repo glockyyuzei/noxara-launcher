@@ -107,7 +107,7 @@ function mapSearchResponse(raw: ModrinthSearchResponseRaw): ModrinthSearchResult
     follows: h.follows,
     categories: h.categories,
     loaders: h.display_categories.filter((c) =>
-      ["fabric", "forge"].includes(c)
+      ["fabric", "forge", "neoforge", "quilt"].includes(c)
     ),
     latestVersionId: h.latest_version || null,
     projectType: h.project_type,

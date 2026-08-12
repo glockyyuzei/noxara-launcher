@@ -241,7 +241,8 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 function loaderLabel(loader: InstanceRecord["loader"], loaderVersion: string | null): string {
   if (loader === "vanilla") return "Vanilla";
-  const base = loader === "fabric" ? "Fabric" : "Forge";
+  const base =
+    loader === "fabric" ? "Fabric" : loader === "forge" ? "Forge" : loader === "neoforge" ? "NeoForge" : "Quilt";
   return loaderVersion ? `${base} ${loaderVersion}` : base;
 }
 

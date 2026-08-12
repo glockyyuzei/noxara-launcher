@@ -14,7 +14,9 @@ import { getSettings } from "./settings";
 import { detectJava } from "./java";
 import { librariesDir, assetsDir, versionsDir } from "../filesystem/paths";
 import { getFabricVersionDetail } from "./fabric";
+import { getQuiltVersionDetail } from "./quilt";
 import { installForge } from "./forge";
+import { installNeoForge } from "./neoforge";
 
 interface DownloadTaskInput {
   url: string;
@@ -200,7 +202,7 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     | {
         id: string;
         minecraft_version: string;
-        loader: "vanilla" | "fabric" | "forge";
+        loader: "vanilla" | "fabric" | "forge" | "neoforge" | "quilt";
         loader_version: string | null;
         instance_dir: string;
         java_path: string | null;
@@ -231,25 +233,43 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
       throw new Error("This instance has no Fabric Loader version recorded — try recreating it.");
     }
     ({ detail: versionDetail } = await getFabricVersionDetail(instance.minecraft_version, instance.loader_version));
-  } else if (instance.loader === "forge") {
+  } else if (instance.loader === "quilt") {
     if (!instance.loader_version) {
-      throw new Error("This instance has no Forge version recorded — try recreating it.");
+      throw new Error("This instance has no Quilt Loader version recorded — try recreating it.");
     }
-    // Forge's own installer tools need a real vanilla client jar to patch against
-    // (the MINECRAFT_JAR token) and a working JVM to run in — resolve both before
-    // running the installer pipeline.
+    ({ detail: versionDetail } = await getQuiltVersionDetail(instance.minecraft_version, instance.loader_version));
+  } else if (instance.loader === "forge" || instance.loader === "neoforge") {
+    if (!instance.loader_version) {
+      throw new Error(
+        `This instance has no ${instance.loader === "forge" ? "Forge" : "NeoForge"} version recorded — try recreating it.`
+      );
+    }
+    // Forge/NeoForge's own installer tools need a real vanilla client jar to patch
+    // against (the MINECRAFT_JAR token) and a working JVM to run in — resolve both
+    // before running the installer pipeline. NeoForge's installer is Forge-derived
+    // and shares the same processor/install_profile format.
     const nativesDir = path.join(instance.instance_dir, "natives");
     const { clientJarPath: vanillaClientJarPath } = await ensureVersionAssetsAndLibraries(vanillaDetail, nativesDir);
     const javaPathForInstall = await resolveJavaPath(instance.java_path, recommendedJavaMajor);
 
-    const { detail } = await installForge(
-      randomUUID(),
-      instance.minecraft_version,
-      instance.loader_version,
-      javaPathForInstall,
-      vanillaClientJarPath,
-      vanillaDetail
-    );
+    const { detail } =
+      instance.loader === "forge"
+        ? await installForge(
+            randomUUID(),
+            instance.minecraft_version,
+            instance.loader_version,
+            javaPathForInstall,
+            vanillaClientJarPath,
+            vanillaDetail
+          )
+        : await installNeoForge(
+            randomUUID(),
+            instance.minecraft_version,
+            instance.loader_version,
+            javaPathForInstall,
+            vanillaClientJarPath,
+            vanillaDetail
+          );
     versionDetail = detail;
   }
 

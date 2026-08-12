@@ -22,13 +22,14 @@ import DownloadsPage from "./pages/DownloadsPage";
 import SettingsPage from "./pages/SettingsPage";
 
 export default function App() {
-  const setActiveDownload = useLaunchStore((s) => s.setActiveDownload);
   const appendLog = useLaunchStore((s) => s.appendLog);
   const markRunning = useLaunchStore((s) => s.markRunning);
   const refreshRunning = useLaunchStore((s) => s.refreshRunning);
   const refreshAccounts = useAccountStore((s) => s.refresh);
   const onModProgress = useDownloadStore((s) => s.onProgress);
   const onModComplete = useDownloadStore((s) => s.onComplete);
+  const onBatchProgress = useDownloadStore((s) => s.onBatchProgress);
+  const onBatchComplete = useDownloadStore((s) => s.onBatchComplete);
   const onForgeProgress = useDownloadStore((s) => s.onForgeProgress);
 
   // Load the account list once at app start so the bottom-left selector,
@@ -38,13 +39,11 @@ export default function App() {
   }, [refreshAccounts]);
 
   useEffect(() => {
-    const offProgress = window.noxara.onDownloadProgress((p) => setActiveDownload(p));
+    const offProgress = window.noxara.onDownloadProgress((p) => onBatchProgress(p));
     const offComplete = window.noxara.onDownloadComplete((p) => {
-      setActiveDownload(null);
+      onBatchComplete(p);
       if (p.failed.length > 0) {
         toast.error("Some files failed to download", `${p.failed.length} file(s) could not be downloaded`);
-      } else {
-        toast.success("Download complete");
       }
     });
     const offStarted = window.noxara.onGameStarted((p) => markRunning(p.instanceId, true));
@@ -70,7 +69,7 @@ export default function App() {
     });
     const offForgeProgress = window.noxara.onForgeInstallProgress((p) => {
       onForgeProgress(p);
-      if (p.stage === "complete") toast.success("Forge installed", p.message);
+      if (p.stage === "complete") toast.success("Loader installed", p.message);
     });
 
     // Reconcile running state against the core's actual process registry so the UI
@@ -94,14 +93,14 @@ export default function App() {
       clearInterval(pollTimer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [appendLog, markRunning, setActiveDownload, refreshRunning, onModProgress, onModComplete, onForgeProgress]);
+  }, [appendLog, markRunning, refreshRunning, onModProgress, onModComplete, onBatchProgress, onBatchComplete, onForgeProgress]);
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-noxara-black min-w-[640px]">
+    <div className="h-screen w-screen flex flex-col bg-noxara-black">
       <TitleBar />
       <div className="flex flex-1 min-h-0">
         <Sidebar />
-        <main className="flex-1 min-w-0 overflow-y-auto">
+        <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/instances" element={<InstancesPage />} />

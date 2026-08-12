@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check } from "lucide-react";
+import { Check, Loader2, AlertCircle } from "lucide-react";
 import type {
   CreateInstanceInput,
   InstanceRecord,
   VersionManifestEntry,
   ForgeVersion,
   FabricLoaderVersion,
+  NeoForgeVersion,
+  QuiltLoaderVersion,
 } from "@shared/types/ipc";
 
-const LOADERS: CreateInstanceInput["loader"][] = ["vanilla", "fabric", "forge"];
+const LOADERS: CreateInstanceInput["loader"][] = ["vanilla", "fabric", "forge", "neoforge", "quilt"];
 
 export function CreateInstanceWizard({
   onClose,
@@ -23,14 +25,10 @@ export function CreateInstanceWizard({
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [minecraftVersion, setMinecraftVersion] = useState<string | null>(null);
   const [loader, setLoader] = useState<CreateInstanceInput["loader"]>("vanilla");
-  const [forgeVersions, setForgeVersions] = useState<ForgeVersion[]>([]);
-  const [forgeVersionsLoading, setForgeVersionsLoading] = useState(false);
-  const [forgeVersionsError, setForgeVersionsError] = useState<string | null>(null);
-  const [selectedForgeVersion, setSelectedForgeVersion] = useState<string | null>(null);
-  const [fabricVersions, setFabricVersions] = useState<FabricLoaderVersion[]>([]);
-  const [fabricVersionsLoading, setFabricVersionsLoading] = useState(false);
-  const [fabricVersionsError, setFabricVersionsError] = useState<string | null>(null);
-  const [selectedFabricVersion, setSelectedFabricVersion] = useState<string | null>(null);
+  const [loaderVersions, setLoaderVersions] = useState<{ version: string; display: string; tag: string }[]>([]);
+  const [loaderVersionsLoading, setLoaderVersionsLoading] = useState(false);
+  const [loaderVersionsError, setLoaderVersionsError] = useState<string | null>(null);
+  const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
   const [minRam, setMinRam] = useState(2048);
   const [maxRam, setMaxRam] = useState(4096);
   const [error, setError] = useState<string | null>(null);
@@ -53,60 +51,58 @@ export function CreateInstanceWizard({
     });
   }, []);
 
-  // Fetch real, currently-published Forge builds for whichever Minecraft version is
-  // selected — never auto-pick versions[0] silently; the user chooses from this list
-  // (defaulting the selection to Forge's own "recommended" tag when one exists).
+  // Fetch real, currently-published loader builds for whichever Minecraft version is
+  // selected. All four loaders share a picker: Fabric/Quilt list Loader builds by
+  // version, Forge/NeoForge list builds by "<mc>-<loader>" full version. The newest
+  // stable (or tagged "recommended"/"latest") build is pre-selected; switching
+  // Minecraft versions re-fetches compatible builds. None of this is hardcoded.
   useEffect(() => {
-    if (loader !== "forge" || !minecraftVersion) return;
+    if (loader === "vanilla" || !minecraftVersion) return;
     let cancelled = false;
-    setForgeVersionsLoading(true);
-    setForgeVersionsError(null);
-    setForgeVersions([]);
-    setSelectedForgeVersion(null);
-    window.noxara
-      .getForgeVersions(minecraftVersion)
+    setLoaderVersionsLoading(true);
+    setLoaderVersionsError(null);
+    setLoaderVersions([]);
+    setSelectedVersion(null);
+    const request =
+      loader === "fabric"
+        ? window.noxara.getFabricLoaderVersions(minecraftVersion)
+        : loader === "quilt"
+          ? window.noxara.getQuiltLoaderVersions(minecraftVersion)
+          : loader === "forge"
+            ? window.noxara.getForgeVersions(minecraftVersion)
+            : window.noxara.getNeoForgeVersions(minecraftVersion);
+    request
       .then((list) => {
         if (cancelled) return;
-        setForgeVersions(list);
-        const preferred = list.find((v) => v.recommended) ?? list.find((v) => v.latest) ?? list[0];
-        setSelectedForgeVersion(preferred?.fullVersion ?? null);
+        const isForgeStyle = loader === "forge" || loader === "neoforge";
+        const items = (list as unknown as Array<ForgeVersion | FabricLoaderVersion>).map((v) => {
+          if (isForgeStyle) {
+            const f = v as ForgeVersion;
+            return {
+              version: f.fullVersion,
+              display: f.forgeVersion,
+              tag: f.recommended ? "Recommended" : f.latest ? "Latest" : "",
+            };
+          }
+          const l = v as FabricLoaderVersion;
+          return {
+            version: l.version,
+            display: l.version,
+            tag: l.stable ? "Recommended" : "",
+          };
+        });
+        const preferred =
+          items.find((v) => (isForgeStyle ? v.tag === "Recommended" || v.tag === "Latest" : v.tag === "Recommended")) ??
+          items[0];
+        setLoaderVersions(items);
+        setSelectedVersion(preferred?.version ?? null);
       })
       .catch((e) => {
         if (cancelled) return;
-        setForgeVersionsError(e instanceof Error ? e.message : "Failed to load Forge versions");
+        setLoaderVersionsError(e instanceof Error ? e.message : "Failed to load loader versions");
       })
       .finally(() => {
-        if (!cancelled) setForgeVersionsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [loader, minecraftVersion]);
-
-  // Fetch real, currently-published Fabric Loader builds for whichever Minecraft
-  // version is selected — the newest stable build is pre-selected (with other builds
-  // available), and switching Minecraft versions re-fetches compatible builds.
-  useEffect(() => {
-    if (loader !== "fabric" || !minecraftVersion) return;
-    let cancelled = false;
-    setFabricVersionsLoading(true);
-    setFabricVersionsError(null);
-    setFabricVersions([]);
-    setSelectedFabricVersion(null);
-    window.noxara
-      .getFabricLoaderVersions(minecraftVersion)
-      .then((list) => {
-        if (cancelled) return;
-        setFabricVersions(list);
-        const preferred = list.find((v) => v.stable) ?? list[0];
-        setSelectedFabricVersion(preferred?.version ?? null);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        setFabricVersionsError(e instanceof Error ? e.message : "Failed to load Fabric Loader versions");
-      })
-      .finally(() => {
-        if (!cancelled) setFabricVersionsLoading(false);
+        if (!cancelled) setLoaderVersionsLoading(false);
       });
     return () => {
       cancelled = true;
@@ -120,15 +116,11 @@ export function CreateInstanceWizard({
 
   async function handleCreate() {
     if (!minecraftVersion) return;
-    if (loader === "forge" && !selectedForgeVersion) {
-      setError("Select a Forge version first");
-      return;
-    }
-    if (loader === "fabric" && !selectedFabricVersion) {
+    if (loader !== "vanilla" && !selectedVersion) {
       setError(
-        fabricVersionsError
-          ? "No Fabric Loader version could be loaded for this Minecraft version"
-          : "Select a Fabric Loader version first"
+        loaderVersionsError
+          ? "No loader version could be loaded for this Minecraft version"
+          : "Select a loader version first"
       );
       return;
     }
@@ -139,12 +131,7 @@ export function CreateInstanceWizard({
         name: name.trim() || `New Instance`,
         minecraftVersion,
         loader,
-        loaderVersion:
-          loader === "vanilla"
-            ? null
-            : loader === "forge"
-              ? selectedForgeVersion
-              : selectedFabricVersion,
+        loaderVersion: loader === "vanilla" ? null : selectedVersion,
         minRamMb: minRam,
         maxRamMb: maxRam,
       });
@@ -210,7 +197,7 @@ export function CreateInstanceWizard({
           {step === 3 && (
             <div>
               <label className="yz-label block mb-2">Mod Loader</label>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
                 {LOADERS.map((l) => (
                   <button
                     key={l}
@@ -227,88 +214,59 @@ export function CreateInstanceWizard({
                 ))}
               </div>
 
-              {loader === "fabric" && (
-                <div className="mt-3">
-                  <label className="yz-label block mb-2">Fabric Loader Version</label>
-                  {fabricVersionsLoading && (
-                    <div className="text-sm text-noxara-muted px-3 py-4 text-center border border-noxara-border rounded">
-                      Loading Fabric Loader builds for {minecraftVersion}…
-                    </div>
-                  )}
-                  {fabricVersionsError && (
-                    <div className="text-sm text-noxara-error px-3 py-3 border border-noxara-border rounded">
-                      {fabricVersionsError}
-                    </div>
-                  )}
-                  {!fabricVersionsLoading && !fabricVersionsError && (
-                    <div className="max-h-48 overflow-y-auto border border-noxara-border rounded">
-                      {fabricVersions.map((v) => (
-                        <button
-                          key={v.version}
-                          onClick={() => setSelectedFabricVersion(v.version)}
-                          className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between hover:bg-noxara-elevated transition-colors ${
-                            selectedFabricVersion === v.version ? "bg-noxara-elevated text-noxara-white" : "text-noxara-subtle"
-                          }`}
-                        >
-                          <span>{v.version}</span>
-                          {v.stable && <span className="text-xs text-noxara-muted">Recommended</span>}
-                        </button>
-                      ))}
-                      {fabricVersions.length === 0 && (
-                        <div className="px-3 py-4 text-sm text-noxara-muted text-center">
-                          No Fabric Loader builds found for {minecraftVersion}. This Minecraft
-                          version is not supported by Fabric.
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <p className="text-xs text-noxara-muted mt-3">
-                    The newest stable loader build is pre-selected. You can pick any published
-                    build below — a build that won't work with this Minecraft version won't be
-                    listed.
-                  </p>
-                </div>
+              {loader === "vanilla" && (
+                <p className="text-xs text-noxara-muted mt-3">Vanilla instances run unmodified Minecraft.</p>
               )}
 
-              {loader === "forge" && (
+              {loader !== "vanilla" && (
                 <div className="mt-3">
-                  <label className="yz-label block mb-2">Forge Version</label>
-                  {forgeVersionsLoading && (
-                    <div className="text-sm text-noxara-muted px-3 py-4 text-center border border-noxara-border rounded">
-                      Loading Forge builds for {minecraftVersion}…
+                  <label className="yz-label block mb-2">
+                    {loader === "fabric"
+                      ? "Fabric Loader Version"
+                      : loader === "quilt"
+                        ? "Quilt Loader Version"
+                        : loader === "forge"
+                          ? "Forge Version"
+                          : "NeoForge Version"}
+                  </label>
+                  {loaderVersionsLoading && (
+                    <div className="text-sm text-noxara-muted px-3 py-4 text-center border border-noxara-border rounded flex items-center justify-center gap-2">
+                      <Loader2 size={14} className="animate-spin" />
+                      Loading {loader} builds for {minecraftVersion}…
                     </div>
                   )}
-                  {forgeVersionsError && (
-                    <div className="text-sm text-noxara-error px-3 py-3 border border-noxara-border rounded">
-                      {forgeVersionsError}
+                  {loaderVersionsError && (
+                    <div className="text-sm text-noxara-error px-3 py-3 border border-noxara-border rounded flex items-start gap-2">
+                      <AlertCircle size={14} className="shrink-0 mt-0.5" />
+                      {loaderVersionsError}
                     </div>
                   )}
-                  {!forgeVersionsLoading && !forgeVersionsError && (
+                  {!loaderVersionsLoading && !loaderVersionsError && loaderVersions.length > 0 && (
                     <div className="max-h-48 overflow-y-auto border border-noxara-border rounded">
-                      {forgeVersions.map((v) => (
+                      {loaderVersions.map((v) => (
                         <button
-                          key={v.fullVersion}
-                          onClick={() => setSelectedForgeVersion(v.fullVersion)}
+                          key={v.version}
+                          onClick={() => setSelectedVersion(v.version)}
                           className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between hover:bg-noxara-elevated transition-colors ${
-                            selectedForgeVersion === v.fullVersion ? "bg-noxara-elevated text-noxara-white" : "text-noxara-subtle"
+                            selectedVersion === v.version ? "bg-noxara-elevated text-noxara-white" : "text-noxara-subtle"
                           }`}
                         >
-                          <span>{v.forgeVersion}</span>
-                          <span className="text-xs text-noxara-muted">
-                            {v.recommended ? "Recommended" : v.latest ? "Latest" : ""}
-                          </span>
+                          <span>{v.display}</span>
+                          {v.tag && <span className="text-xs text-noxara-muted">{v.tag}</span>}
                         </button>
                       ))}
-                      {forgeVersions.length === 0 && (
-                        <div className="px-3 py-4 text-sm text-noxara-muted text-center">
-                          No Forge builds found for {minecraftVersion}
-                        </div>
-                      )}
+                    </div>
+                  )}
+                  {!loaderVersionsLoading && !loaderVersionsError && loaderVersions.length === 0 && (
+                    <div className="px-3 py-4 text-sm text-noxara-muted text-center">
+                      No published {loader} builds were found for Minecraft {minecraftVersion}. This
+                      Minecraft version may not be supported by {loader === "neoforge" ? "NeoForge" : loader === "fabric" ? "Fabric" : loader === "quilt" ? "the Quilt Loader" : loader}.
                     </div>
                   )}
                   <p className="text-xs text-noxara-muted mt-3">
-                    Installing Forge runs its own installer tools the first time this build is used
-                    (usually under a minute) — you'll see progress on first launch.
+                    {loader === "forge" || loader === "neoforge"
+                      ? `${loader === "forge" ? "Forge" : "NeoForge"} installs its own installer tools the first time the build is used (usually under a minute) — you'll see progress on first launch.`
+                      : `The newest stable loader build is pre-selected. You can pick any published build below — a build that won't work with this Minecraft version won't be listed.`}
                   </p>
                 </div>
               )}

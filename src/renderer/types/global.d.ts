@@ -8,6 +8,8 @@ import type {
   DownloadCompletePayload,
   ForgeVersion,
   FabricLoaderVersion,
+  QuiltLoaderVersion,
+  NeoForgeVersion,
   ForgeInstallProgressPayload,
   GameOutputPayload,
   GameExitPayload,
@@ -55,7 +57,9 @@ declare global {
       listRunningInstances(): Promise<string[]>;
       killInstance(instanceId: string): Promise<void>;
       getForgeVersions(mcVersion: string): Promise<ForgeVersion[]>;
+      getNeoForgeVersions(mcVersion: string): Promise<NeoForgeVersion[]>;
       getFabricLoaderVersions(mcVersion: string, forceRefresh?: boolean): Promise<FabricLoaderVersion[]>;
+      getQuiltLoaderVersions(mcVersion: string, forceRefresh?: boolean): Promise<QuiltLoaderVersion[]>;
       searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult>;
       getModVersions(projectId: string, loader?: ModLoader, gameVersion?: string): Promise<ModrinthVersion[]>;
       installMod(instanceId: string, projectId: string, versionId: string): Promise<InstalledMod>;

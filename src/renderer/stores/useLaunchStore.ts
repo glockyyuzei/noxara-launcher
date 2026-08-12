@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { DownloadProgressPayload, GameOutputPayload } from "@shared/types/ipc";
+import type { GameOutputPayload } from "@shared/types/ipc";
 
 /**
  * Tracks the real launch lifecycle for every instance: launching (IPC call in flight,
@@ -10,11 +10,9 @@ import type { DownloadProgressPayload, GameOutputPayload } from "@shared/types/i
  * crash is reflected correctly even if an event was missed.
  */
 interface LaunchState {
-  activeDownload: DownloadProgressPayload | null;
   launchingInstanceIds: Set<string>;
   runningInstanceIds: Set<string>;
   logsByInstance: Record<string, string[]>;
-  setActiveDownload: (p: DownloadProgressPayload | null) => void;
   markLaunching: (instanceId: string, launching: boolean) => void;
   markRunning: (instanceId: string, running: boolean) => void;
   appendLog: (payload: GameOutputPayload) => void;
@@ -31,12 +29,10 @@ function toggle(set: Set<string>, value: string, add: boolean): Set<string> {
   return next;
 }
 
-export const useLaunchStore = create<LaunchState>((set, get) => ({
-  activeDownload: null,
+export const useLaunchStore = create<LaunchState>((set) => ({
   launchingInstanceIds: new Set(),
   runningInstanceIds: new Set(),
   logsByInstance: {},
-  setActiveDownload: (p) => set({ activeDownload: p }),
   markLaunching: (instanceId, launching) =>
     set((state) => ({ launchingInstanceIds: toggle(state.launchingInstanceIds, instanceId, launching) })),
   markRunning: (instanceId, running) =>

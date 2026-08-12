@@ -97,7 +97,7 @@ export function listInstalledContent(instanceId: string, category: ContentCatego
 function instanceLoaderAndVersion(instanceId: string): { loader: ModLoader | null; gameVersion: string } {
   const instance = listInstances().find((i) => i.id === instanceId);
   if (!instance) throw new Error(`instance ${instanceId} not found`);
-  const loader = ["fabric", "forge"].includes(instance.loader)
+  const loader = ["fabric", "forge", "neoforge", "quilt"].includes(instance.loader)
     ? (instance.loader as ModLoader)
     : null;
   return { loader, gameVersion: instance.minecraftVersion };

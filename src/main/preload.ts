@@ -53,8 +53,11 @@ const api = {
   killInstance: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.killInstance, instanceId),
 
   getForgeVersions: (mcVersion: string) => ipcRenderer.invoke(IPC_CHANNELS.getForgeVersions, mcVersion),
+  getNeoForgeVersions: (mcVersion: string) => ipcRenderer.invoke(IPC_CHANNELS.getNeoForgeVersions, mcVersion),
   getFabricLoaderVersions: (mcVersion: string, forceRefresh?: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.getFabricLoaderVersions, mcVersion, forceRefresh),
+  getQuiltLoaderVersions: (mcVersion: string, forceRefresh?: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.getQuiltLoaderVersions, mcVersion, forceRefresh),
 
   searchMods: (query: ModSearchQuery) => ipcRenderer.invoke(IPC_CHANNELS.searchMods, query),
   getModVersions: (projectId: string, loader?: ModLoader, gameVersion?: string) =>

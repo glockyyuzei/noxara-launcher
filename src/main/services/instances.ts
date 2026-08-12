@@ -6,7 +6,9 @@ import { getDb } from "./database";
 import { instanceDir, slugifyInstanceName } from "../filesystem/paths";
 import type { CreateInstanceInput, InstanceRecord } from "../../shared/types/ipc";
 import { resolveFabricLoaderVersion } from "./fabric";
+import { resolveQuiltLoaderVersion } from "./quilt";
 import { getForgeVersions } from "./forge";
+import { getNeoForgeVersions } from "./neoforge";
 
 interface InstanceRow {
   id: string;
@@ -68,7 +70,7 @@ function validateCreateInput(input: CreateInstanceInput): void {
   if (!input.minecraftVersion) {
     throw new Error("A Minecraft version must be selected");
   }
-  if (!["vanilla", "fabric", "forge"].includes(input.loader)) {
+  if (!["vanilla", "fabric", "forge", "neoforge", "quilt"].includes(input.loader)) {
     throw new Error(`Unsupported loader: ${input.loader}`);
   }
   if (input.loader !== "vanilla" && !input.loaderVersion) {
@@ -99,6 +101,8 @@ export async function createInstance(input: CreateInstanceInput): Promise<Instan
   let resolvedLoaderVersion = input.loaderVersion ?? null;
   if (input.loader === "fabric") {
     resolvedLoaderVersion = await resolveFabricLoaderVersion(input.minecraftVersion, resolvedLoaderVersion);
+  } else if (input.loader === "quilt") {
+    resolvedLoaderVersion = await resolveQuiltLoaderVersion(input.minecraftVersion, resolvedLoaderVersion);
   } else if (input.loader === "forge") {
     // Forge's own installer/processor pipeline only actually runs on first launch (it
     // needs a resolved Java runtime, which we don't have yet during instance creation —
@@ -110,6 +114,16 @@ export async function createInstance(input: CreateInstanceInput): Promise<Instan
       resolvedLoaderVersion = chosen.fullVersion;
     } else if (!forgeVersions.some((v) => v.fullVersion === resolvedLoaderVersion)) {
       throw new Error(`Forge ${resolvedLoaderVersion} is not a published build for Minecraft ${input.minecraftVersion}`);
+    }
+  } else if (input.loader === "neoforge") {
+    // Same contract as Forge: pin down and validate which NeoForge build this instance
+    // is committed to; the installer itself runs during first launch (see launch.ts).
+    const neoforgeVersions = await getNeoForgeVersions(input.minecraftVersion);
+    if (!resolvedLoaderVersion || resolvedLoaderVersion === "latest") {
+      const chosen = neoforgeVersions.find((v) => v.recommended) ?? neoforgeVersions.find((v) => v.latest) ?? neoforgeVersions[0];
+      resolvedLoaderVersion = chosen.fullVersion;
+    } else if (!neoforgeVersions.some((v) => v.fullVersion === resolvedLoaderVersion)) {
+      throw new Error(`NeoForge ${resolvedLoaderVersion} is not a published build for Minecraft ${input.minecraftVersion}`);
     }
   }
 
