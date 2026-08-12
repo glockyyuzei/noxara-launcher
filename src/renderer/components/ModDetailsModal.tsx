@@ -25,20 +25,24 @@ function formatDate(iso: string): string {
  * with that instance's Minecraft version + loader. Nothing here ever silently installs
  * `versions[0]` on the user's behalf.
  */
+/** Lets ModDetailsModal skip the "pick an instance" step when it's opened from a page
+ * that already has one specific instance in context. */
 export function ModDetailsModal({
   mod,
   moddableInstances,
   installingKeys,
   onInstall,
   onClose,
+  initialInstance,
 }: {
   mod: ModrinthSearchHit;
   moddableInstances: InstanceRecord[];
   installingKeys: Set<string>;
   onInstall: (instanceId: string, mod: ModrinthSearchHit, versionId: string) => void;
   onClose: () => void;
+  initialInstance?: InstanceRecord;
 }) {
-  const [selectedInstance, setSelectedInstance] = useState<InstanceRecord | null>(null);
+  const [selectedInstance, setSelectedInstance] = useState<InstanceRecord | null>(initialInstance ?? null);
   const [versions, setVersions] = useState<ModrinthVersion[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
   const [versionsError, setVersionsError] = useState<string | null>(null);

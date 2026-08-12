@@ -75,6 +75,26 @@ export async function searchMods(query: ModSearchQuery): Promise<ModrinthSearchR
     limit: String(query.limit ?? 20),
   });
 
+  // Same exact-match tagging quirk as getProjectVersions below: a project can be
+  // genuinely compatible with a Minecraft version its listed hits just never got
+  // explicitly tagged for. Rather than showing zero results for a real search, widen
+  // to loader-only and let the version-selection step (which already does its own
+  // fallback) sort out real compatibility per-project.
+  if (raw.hits.length === 0 && query.gameVersion) {
+    const widened = await modrinthFetch<ModrinthSearchResponseRaw>("/search", {
+      query: query.query ?? "",
+      facets: buildFacets(query.loader, undefined),
+      index: SORT_MAP[query.sort ?? "relevance"],
+      offset: String(query.offset ?? 0),
+      limit: String(query.limit ?? 20),
+    });
+    return mapSearchResponse(widened);
+  }
+
+  return mapSearchResponse(raw);
+}
+
+function mapSearchResponse(raw: ModrinthSearchResponseRaw): ModrinthSearchResult {
   const hits: ModrinthSearchHit[] = raw.hits.map((h) => ({
     projectId: h.project_id,
     slug: h.slug,
@@ -137,18 +157,40 @@ function rawVersionToVersion(v: ModrinthVersionRaw): ModrinthVersion {
   };
 }
 
-/** Compatible versions for a project, filtered server-side by loader + game version when given. */
+/**
+ * Compatible versions for a project, filtered by loader + game version when given.
+ *
+ * Modrinth's server-side version filter does an EXACT string match against each
+ * version's tagged game_versions list. Mod authors frequently only tag the versions
+ * they explicitly tested (e.g. "1.21" but never republish for "1.21.1", even though
+ * the mod works fine on it) — so a strict loaders+game_versions query can come back
+ * empty even when a real, working option exists. Failing straight to "no compatible
+ * version" off that strict result is exactly the false negative this exists to avoid:
+ * if the strict query is empty, we fall back to a loader-only query and return
+ * whatever Modrinth has, so the caller can show real options instead of a dead end.
+ * Every returned version still carries its own real `gameVersions` list, so the UI can
+ * make it clear to the user which ones are an exact match for their instance.
+ */
 export async function getProjectVersions(
   projectId: string,
   loader?: ModLoader,
   gameVersion?: string
 ): Promise<ModrinthVersion[]> {
-  const params: Record<string, string> = {};
-  if (loader) params.loaders = JSON.stringify([loader]);
-  if (gameVersion) params.game_versions = JSON.stringify([gameVersion]);
+  const strict: Record<string, string> = {};
+  if (loader) strict.loaders = JSON.stringify([loader]);
+  if (gameVersion) strict.game_versions = JSON.stringify([gameVersion]);
 
-  const raw = await modrinthFetch<ModrinthVersionRaw[]>(`/project/${projectId}/version`, params);
-  return raw.map(rawVersionToVersion);
+  const strictResult = await modrinthFetch<ModrinthVersionRaw[]>(`/project/${projectId}/version`, strict);
+  if (strictResult.length > 0 || !gameVersion) {
+    return strictResult.map(rawVersionToVersion);
+  }
+
+  // Strict (loader + exact game version) came back empty — widen to loader-only so a
+  // real but differently-tagged version isn't hidden from the user.
+  const loose: Record<string, string> = {};
+  if (loader) loose.loaders = JSON.stringify([loader]);
+  const looseResult = await modrinthFetch<ModrinthVersionRaw[]>(`/project/${projectId}/version`, loose);
+  return looseResult.map(rawVersionToVersion);
 }
 
 export async function getVersion(versionId: string): Promise<ModrinthVersion> {

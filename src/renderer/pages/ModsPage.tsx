@@ -24,6 +24,7 @@ export default function ModsPage() {
     query,
     loader,
     sort,
+    gameVersion,
     hits,
     totalHits,
     offset,
@@ -35,6 +36,7 @@ export default function ModsPage() {
     setQuery,
     setLoader,
     setSort,
+    setGameVersion,
     search,
     nextPage,
     prevPage,
@@ -44,10 +46,16 @@ export default function ModsPage() {
 
   const [instances, setInstances] = useState<InstanceRecord[]>([]);
   const [installTarget, setInstallTarget] = useState<ModrinthSearchHit | null>(null);
+  const [mcVersions, setMcVersions] = useState<string[]>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
     window.noxara.listInstances().then(setInstances);
+    // Real, current version list from Mojang's manifest — never hardcoded, so this
+    // stays correct as new Minecraft versions ship.
+    window.noxara.getVersionManifest().then((manifest) => {
+      setMcVersions(manifest.versions.filter((v) => v.type === "release").map((v) => v.id));
+    });
     search();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -57,7 +65,7 @@ export default function ModsPage() {
     debounceRef.current = setTimeout(() => search(0), 350);
     return () => clearTimeout(debounceRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, loader, sort]);
+  }, [query, loader, sort, gameVersion]);
 
   useEffect(() => {
     for (const inst of instances) refreshInstalled(inst.id);
@@ -135,6 +143,18 @@ export default function ModsPage() {
           {SORT_OPTIONS.map((o) => (
             <option key={o.id} value={o.id}>
               Sort: {o.label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={gameVersion}
+          onChange={(e) => setGameVersion(e.target.value)}
+          className="yz-input py-1.5 text-xs w-auto"
+        >
+          <option value="all">Any Minecraft version</option>
+          {mcVersions.map((v) => (
+            <option key={v} value={v}>
+              Minecraft {v}
             </option>
           ))}
         </select>

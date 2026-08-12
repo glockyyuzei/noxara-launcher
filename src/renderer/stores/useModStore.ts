@@ -12,6 +12,7 @@ interface ModState {
   query: string;
   loader: ModLoader | "all";
   sort: ModSearchSort;
+  gameVersion: string | "all";
   hits: ModrinthSearchHit[];
   totalHits: number;
   offset: number;
@@ -27,6 +28,7 @@ interface ModState {
   setQuery: (q: string) => void;
   setLoader: (l: ModLoader | "all") => void;
   setSort: (s: ModSearchSort) => void;
+  setGameVersion: (v: string | "all") => void;
   search: (offset?: number) => Promise<void>;
   nextPage: () => Promise<void>;
   prevPage: () => Promise<void>;
@@ -43,6 +45,7 @@ export const useModStore = create<ModState>((set, get) => ({
   query: "",
   loader: "all",
   sort: "relevance",
+  gameVersion: "all",
   hits: [],
   totalHits: 0,
   offset: 0,
@@ -57,16 +60,18 @@ export const useModStore = create<ModState>((set, get) => ({
   setQuery: (query) => set({ query, offset: 0 }),
   setLoader: (loader) => set({ loader, offset: 0 }),
   setSort: (sort) => set({ sort, offset: 0 }),
+  setGameVersion: (gameVersion) => set({ gameVersion, offset: 0 }),
 
   search: async (offsetOverride) => {
     const token = ++searchToken;
-    const { query, loader, sort, limit } = get();
+    const { query, loader, sort, limit, gameVersion } = get();
     const offset = offsetOverride ?? get().offset;
     set({ searching: true, searchError: null, offset });
     try {
       const result = await window.noxara.searchMods({
         query,
         loader: loader === "all" ? undefined : loader,
+        gameVersion: gameVersion === "all" ? undefined : gameVersion,
         sort,
         limit,
         offset,

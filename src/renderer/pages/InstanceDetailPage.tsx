@@ -5,6 +5,7 @@ import type { InstanceRecord, ModrinthSearchHit } from "@shared/types/ipc";
 import { useLaunchStore } from "../stores/useLaunchStore";
 import { useModStore } from "../stores/useModStore";
 import { InstanceCover } from "../components/InstanceCover";
+import { ModDetailsModal } from "../components/ModDetailsModal";
 import { toast } from "../stores/useToastStore";
 
 const TABS = ["Overview", "Mods", "Logs"] as const;
@@ -168,20 +169,26 @@ function InfoRow({ label, value }: { label: string; value: string }) {
 
 function InstanceModsTab({ instance }: { instance: InstanceRecord }) {
   const {
-    query,
-    hits,
-    searching,
-    searchError,
     installedByInstance,
     installingKeys,
     updatesByInstance,
-    setQuery,
-    search,
     install,
     remove,
     refreshInstalled,
     checkUpdates,
   } = useModStore();
+
+  // Deliberately NOT sharing state with the global Mods-page search (useModStore's
+  // query/hits/loader) — that store's `loader` filter reflects whatever the user last
+  // picked on the Mods page, which has no reason to match this instance's actual
+  // loader. A Forge instance searching mods must always search Forge-compatible mods
+  // for this instance's exact Minecraft version, regardless of what filter is set
+  // elsewhere in the app.
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<ModrinthSearchHit[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [detailsMod, setDetailsMod] = useState<ModrinthSearchHit | null>(null);
 
   const installed = installedByInstance[instance.id] ?? [];
   const updates = updatesByInstance[instance.id] ?? [];
@@ -194,25 +201,40 @@ function InstanceModsTab({ instance }: { instance: InstanceRecord }) {
   }, [instance.id]);
 
   useEffect(() => {
-    const t = setTimeout(() => search(), 350);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
-
-  async function handleInstall(mod: ModrinthSearchHit) {
-    try {
-      const versions = await window.noxara.getModVersions(
-        mod.projectId,
-        instance.loader as never,
-        instance.minecraftVersion
-      );
-      const best = versions[0];
-      if (!best) {
-        toast.error("No compatible version", `${mod.title} has no version for ${instance.minecraftVersion} ${instance.loader}.`);
-        return;
+    if (isVanilla) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setSearching(true);
+      setSearchError(null);
+      try {
+        const result = await window.noxara.searchMods({
+          query,
+          loader: instance.loader as any,
+          gameVersion: instance.minecraftVersion,
+          sort: "relevance",
+          limit: 20,
+        });
+        if (!cancelled) setHits(result.hits);
+      } catch (e) {
+        if (!cancelled) {
+          setSearchError(e instanceof Error ? e.message : "Search failed");
+          setHits([]);
+        }
+      } finally {
+        if (!cancelled) setSearching(false);
       }
-      await install(instance.id, mod.projectId, best.id);
+    }, 350);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [query, instance.loader, instance.minecraftVersion, isVanilla]);
+
+  async function handleInstall(instanceId: string, mod: ModrinthSearchHit, versionId: string) {
+    try {
+      await install(instanceId, mod.projectId, versionId);
       toast.success("Mod installed", `${mod.title} added to ${instance.name}`);
+      setDetailsMod(null);
     } catch (e) {
       toast.error("Couldn't install mod", e instanceof Error ? e.message : undefined);
     }
@@ -343,7 +365,7 @@ function InstanceModsTab({ instance }: { instance: InstanceRecord }) {
                     <span className="text-xs text-noxara-success shrink-0">Installed</span>
                   ) : (
                     <button
-                      onClick={() => handleInstall(mod)}
+                      onClick={() => setDetailsMod(mod)}
                       disabled={installingKeys.has(key)}
                       className="yz-btn-secondary text-xs px-2.5 py-1 shrink-0"
                     >
@@ -356,6 +378,17 @@ function InstanceModsTab({ instance }: { instance: InstanceRecord }) {
           </div>
         )}
       </div>
+
+      {detailsMod && (
+        <ModDetailsModal
+          mod={detailsMod}
+          moddableInstances={[instance]}
+          initialInstance={instance}
+          installingKeys={installingKeys}
+          onInstall={handleInstall}
+          onClose={() => setDetailsMod(null)}
+        />
+      )}
     </div>
   );
 }
