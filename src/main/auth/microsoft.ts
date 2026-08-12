@@ -192,13 +192,27 @@ async function verifyOwnership(mcAccessToken: string): Promise<void> {
   }
 }
 
-async function fetchProfile(mcAccessToken: string): Promise<{ id: string; name: string }> {
+async function fetchProfile(mcAccessToken: string): Promise<{ id: string; name: string; skinUrl: string | null }> {
   const resp = await fetch(MC_PROFILE_URL, {
     headers: { Authorization: `Bearer ${mcAccessToken}`, ...COMMON_HEADERS },
   });
   if (resp.status === 404) throw new Error("This account does not have a Minecraft profile yet.");
   if (!resp.ok) throw new Error(`Failed to load Minecraft profile: ${resp.status} ${await safeBodySnippet(resp)}`);
-  return (await resp.json()) as { id: string; name: string };
+  const data = (await resp.json()) as {
+    id: string;
+    name: string;
+    skins?: Array<{ state?: string; url?: string; textureUrl?: string; variant?: string }>;
+  };
+  // Prefer the currently-active skin; Mojang's profile endpoint returns the hosted
+  // texture URLs ("textureUrl") which are stable CDN links (they do not expire).
+  const skin = (data.skins ?? []).find((s) => s.state === "ACTIVE") ?? data.skins?.[0];
+  return { id: data.id, name: data.name, skinUrl: skin?.textureUrl ?? skin?.url ?? null };
+}
+
+/** Fetches just the Minecraft profile's identity + active skin texture URL. Used by the
+ * avatar pipeline to build a stable, locally-embedded avatar (see services/avatar.ts). */
+export async function fetchProfileForAvatar(mcAccessToken: string): Promise<{ id: string; name: string; skinUrl: string | null }> {
+  return fetchProfile(mcAccessToken);
 }
 
 /** Runs the full chain after MSA tokens are obtained. Never logs any token value. */

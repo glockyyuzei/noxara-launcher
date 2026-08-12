@@ -12,9 +12,16 @@ import { randomUUID } from "node:crypto";
 import { app } from "electron";
 import { EventEmitter } from "node:events";
 
+/** An error surfaced from noxara-core (or a local bridge failure) with an optional
+ * machine-readable `code` that callers match on to decide retry/classification
+ * (e.g. "timeout", "fabric.network_error", "bad_request"). */
+export type CoreBridgeError = Error & { code?: string };
+
 interface PendingCall {
   resolve: (value: unknown) => void;
-  reject: (err: Error) => void;
+  reject: (err: CoreBridgeError) => void;
+  /** Set once the promise has settled so a late Rust response can't double-fire. */
+  settled: boolean;
 }
 
 export class CoreBridge extends EventEmitter {
@@ -41,7 +48,8 @@ export class CoreBridge extends EventEmitter {
     this.proc.on("exit", (code) => {
       console.warn(`[noxara-core] exited with code ${code}`);
       for (const [, pending] of this.pending) {
-        pending.reject(new Error("noxara-core process exited unexpectedly"));
+        pending.settled = true;
+        pending.reject(coreError("process_exited", "noxara-core process exited unexpectedly"));
       }
       this.pending.clear();
       this.proc = null;
@@ -90,45 +98,82 @@ export class CoreBridge extends EventEmitter {
     const id = parsed.id as string | undefined;
     if (!id) return;
     const pending = this.pending.get(id);
-    if (!pending) return;
+    if (!pending) {
+      // The caller already gave up (e.g. timed out while the Rust task was still
+      // processing). Not an error — the request genuinely completed, just late.
+      console.warn(`[noxara-core] late response for ${id} after it was abandoned`);
+      return;
+    }
     this.pending.delete(id);
 
+    if (pending.settled) {
+      // The promise rejected at its timeout while the Rust task was still working;
+      // the response has now arrived but nothing is listening. Dispose and move on.
+      console.warn(`[noxara-core] late response for ${id} after it was abandoned`);
+      return;
+    }
+
     if (parsed.ok) {
+      pending.settled = true;
       pending.resolve(parsed.result);
     } else {
       const error = parsed.error as { code?: string; message?: string } | undefined;
-      pending.reject(new Error(error?.message ?? "noxara-core returned an unknown error"));
+      pending.settled = true;
+      pending.reject(coreError(error?.code, error?.message ?? "noxara-core returned an unknown error"));
     }
   }
 
-  /** Calls a method on noxara-core and awaits its single JSON-RPC response. */
+  /**
+   * Calls a method on noxara-core and awaits its single JSON-RPC response.
+   *
+   * Timeout handling: when `timeoutMs` elapses the promise rejects with
+   * `code === "timeout"`, but the pending entry is kept so that a late response from
+   * the (still-working) Rust task is matched, logged, and disposed of instead of
+   * being silently orphaned. Callers that care about reliability should retry on
+   * `code === "timeout"` — the underlying work is still completing.
+   */
   call<T>(method: string, params: unknown = {}, timeoutMs = 30_000): Promise<T> {
     if (!this.proc) {
-      return Promise.reject(new Error("noxara-core is not running"));
+      return Promise.reject(coreError("not_running", "noxara-core is not running"));
     }
     const id = randomUUID();
     const request = JSON.stringify({ id, method, params }) + "\n";
 
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`noxara-core call "${method}" timed out`));
-      }, timeoutMs);
-
-      this.pending.set(id, {
+      const pending: PendingCall = {
+        settled: false,
         resolve: (v) => {
           clearTimeout(timer);
+          pending.settled = true;
           resolve(v as T);
         },
         reject: (e) => {
           clearTimeout(timer);
+          pending.settled = true;
           reject(e);
         },
-      });
+      };
 
+      const timer = setTimeout(() => {
+        if (pending.settled) return;
+        // Mark the promise settled, but KEEP the mapping alive so a late response from
+        // the (still-working) Rust task is matched and disposed of in handleLine
+        // instead of leaking. The promise has already rejected — callers retry on
+        // `code === "timeout"`.
+        pending.settled = true;
+        reject(coreError("timeout", `noxara-core call "${method}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.pending.set(id, pending);
       this.proc!.stdin.write(request);
     });
   }
+}
+
+function coreError(code: string | undefined, message: string): CoreBridgeError {
+  const err = new Error(message) as CoreBridgeError;
+  if (code) err.code = code;
+  return err;
 }
 
 export const coreBridge = new CoreBridge();

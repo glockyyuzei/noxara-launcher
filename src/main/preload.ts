@@ -45,6 +45,7 @@ const api = {
   completeMicrosoftLogin: (deviceCode: string, pollIntervalSeconds: number, expiresInSeconds: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.completeMicrosoftLogin, deviceCode, pollIntervalSeconds, expiresInSeconds),
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url),
+  refreshAccountProfile: (accountId: string) => ipcRenderer.invoke(IPC_CHANNELS.refreshAccountProfile, accountId),
 
   launchInstance: (id: string, extraGameArgs?: string[]) =>
     ipcRenderer.invoke(IPC_CHANNELS.launchInstance, id, extraGameArgs),
@@ -52,6 +53,8 @@ const api = {
   killInstance: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.killInstance, instanceId),
 
   getForgeVersions: (mcVersion: string) => ipcRenderer.invoke(IPC_CHANNELS.getForgeVersions, mcVersion),
+  getFabricLoaderVersions: (mcVersion: string, forceRefresh?: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.getFabricLoaderVersions, mcVersion, forceRefresh),
 
   searchMods: (query: ModSearchQuery) => ipcRenderer.invoke(IPC_CHANNELS.searchMods, query),
   getModVersions: (projectId: string, loader?: ModLoader, gameVersion?: string) =>

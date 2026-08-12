@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Check, Users } from "lucide-react";
+import { Plus, Trash2, Check, Users, RefreshCw } from "lucide-react";
 import { useAccountStore } from "../stores/useAccountStore";
 import { AccountAvatar } from "../components/AccountAvatar";
 import { MicrosoftLoginModal } from "../components/MicrosoftLoginModal";
@@ -9,13 +9,14 @@ import { toast } from "../stores/useToastStore";
 import type { AccountRecord } from "@shared/types/ipc";
 
 export default function AccountsPage() {
-  const { accounts, loading, hasLoaded, refresh, switchAccount, createOffline, remove } = useAccountStore();
+  const { accounts, loading, hasLoaded, refresh, switchAccount, createOffline, refreshProfile, remove } = useAccountStore();
   const [showAdd, setShowAdd] = useState(false);
   const [showMicrosoftLogin, setShowMicrosoftLogin] = useState(false);
   const [offlineUsername, setOfflineUsername] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingRemoveId, setPendingRemoveId] = useState<string | null>(null);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!hasLoaded) refresh();
@@ -53,6 +54,18 @@ export default function AccountsPage() {
       toast.error("Couldn't remove account", e instanceof Error ? e.message : undefined);
     } finally {
       setPendingRemoveId(null);
+    }
+  }
+
+  async function handleRefreshProfile(id: string) {
+    setRefreshingId(id);
+    try {
+      await refreshProfile(id);
+      toast.success("Profile refreshed", "Your Minecraft profile information is up to date");
+    } catch (e) {
+      toast.error("Couldn't refresh profile", e instanceof Error ? e.message : undefined);
+    } finally {
+      setRefreshingId(null);
     }
   }
 
@@ -101,7 +114,11 @@ export default function AccountsPage() {
               }`}
             >
               <div className="flex items-center gap-3 min-w-0">
-                <AccountAvatar account={a} size={36} />
+                <AccountAvatar
+                  account={a}
+                  size={36}
+                  onError={a.kind === "microsoft" ? () => handleRefreshProfile(a.id) : undefined}
+                />
                 <div className="min-w-0">
                   <div className="text-sm font-medium truncate">{a.username}</div>
                   <div className="text-xs text-noxara-muted truncate">
@@ -110,6 +127,16 @@ export default function AccountsPage() {
                 </div>
               </div>
               <div className="flex items-center gap-2 shrink-0">
+                {a.kind === "microsoft" && (
+                  <button
+                    onClick={() => handleRefreshProfile(a.id)}
+                    disabled={refreshingId === a.id}
+                    aria-label={`Refresh ${a.username} profile`}
+                    className="yz-btn-ghost px-2"
+                  >
+                    <RefreshCw size={15} className={refreshingId === a.id ? "animate-spin" : ""} />
+                  </button>
+                )}
                 {a.isActive ? (
                   <span className="text-xs text-noxara-success px-2 py-1 flex items-center gap-1 font-medium">
                     <Check size={13} /> ACTIVE

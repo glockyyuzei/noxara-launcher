@@ -114,6 +114,18 @@ export interface ForgeVersion {
   latest: boolean;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Fabric                                                                     */
+/* -------------------------------------------------------------------------- */
+
+export interface FabricLoaderVersion {
+  version: string;
+  stable: boolean;
+  build: number | null;
+  maven: string;
+  separator?: string | null;
+}
+
 export interface ForgeInstallProgressPayload {
   taskId: string;
   stage: "download" | "libraries" | "processing" | "finalizing" | "complete" | string;
@@ -353,6 +365,9 @@ export interface NoxaraApi {
   startMicrosoftLogin(): Promise<MicrosoftDeviceCodeInfo>;
   completeMicrosoftLogin(deviceCode: string, pollIntervalSeconds: number, expiresInSeconds: number): Promise<AccountRecord>;
   openExternal(url: string): Promise<void>;
+  /** Re-fetches a Microsoft account's profile (gamertag, UUID, avatar) and returns the
+   * freshest stored record. Offline accounts are returned unchanged. */
+  refreshAccountProfile(accountId: string): Promise<AccountRecord>;
 
   // Launch
   /**
@@ -365,6 +380,9 @@ export interface NoxaraApi {
 
   // Forge
   getForgeVersions(mcVersion: string): Promise<ForgeVersion[]>;
+
+  // Fabric
+  getFabricLoaderVersions(mcVersion: string, forceRefresh?: boolean): Promise<FabricLoaderVersion[]>;
 
   // Mods (Modrinth)
   searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult>;
@@ -426,8 +444,10 @@ export const IPC_CHANNELS = {
   startMicrosoftLogin: "noxara:accounts:startMicrosoftLogin",
   completeMicrosoftLogin: "noxara:accounts:completeMicrosoftLogin",
   openExternal: "noxara:shell:openExternal",
+  refreshAccountProfile: "noxara:accounts:refreshProfile",
   launchInstance: "noxara:launch:start",
   getForgeVersions: "noxara:forge:getVersions",
+  getFabricLoaderVersions: "noxara:fabric:getLoaderVersions",
   searchMods: "noxara:mods:search",
   getModVersions: "noxara:mods:getVersions",
   installMod: "noxara:mods:install",

@@ -119,7 +119,7 @@ export default function InstanceDetailPage() {
           </div>
           <p className="text-sm text-noxara-subtle mt-0.5">
             Minecraft {instance.minecraftVersion} ·{" "}
-            {instance.loader === "vanilla" ? "Vanilla" : instance.loader}
+            {loaderLabel(instance.loader, instance.loaderVersion)}
           </p>
           <p className="text-xs text-noxara-muted mt-2">
             {instance.lastPlayedAt
@@ -190,6 +190,7 @@ export default function InstanceDetailPage() {
       {tab === "Overview" && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <InfoRow label="Java" value={instance.javaPath ?? "Auto-detected"} />
+          <InfoRow label="Loader" value={loaderLabel(instance.loader, instance.loaderVersion)} />
           <InfoRow label="Memory" value={`${instance.minRamMb} – ${instance.maxRamMb} MB`} />
           <InfoRow label="Created" value={new Date(instance.createdAt).toLocaleDateString()} />
           <InfoRow label="Last Played" value={instance.lastPlayedAt ? new Date(instance.lastPlayedAt).toLocaleString() : "Never"} />
@@ -236,6 +237,12 @@ function InfoRow({ label, value }: { label: string; value: string }) {
       <div className="text-sm text-noxara-text">{value}</div>
     </div>
   );
+}
+
+function loaderLabel(loader: InstanceRecord["loader"], loaderVersion: string | null): string {
+  if (loader === "vanilla") return "Vanilla";
+  const base = loader === "fabric" ? "Fabric" : "Forge";
+  return loaderVersion ? `${base} ${loaderVersion}` : base;
 }
 
 function InstanceModsTab({ instance }: { instance: InstanceRecord }) {

@@ -14,6 +14,30 @@ use serde_json::json;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use crate::fabric::FabricApiError;
+
+/// Turns any error into a stable, machine-readable RPC code. Loader services attach
+/// their own codes (e.g. `fabric.network_error`); anything that bottoms out in a
+/// `reqwest::Error` (e.g. the Mojang manifest fetch that a Fabric detail preflight
+/// performs) is reported as `network_error` so the Electron side can retry it.
+fn classify_error_code(err: &anyhow::Error) -> &'static str {
+    if let Some(fabric_err) = err.downcast_ref::<FabricApiError>() {
+        return fabric_err.code;
+    }
+    if let Some(req) = err.downcast_ref::<reqwest::Error>() {
+        if req.is_timeout() || req.is_connect() || req.is_request() {
+            return "network_error";
+        }
+        if let Some(status) = req.status() {
+            if status.is_client_error() {
+                return "bad_request";
+            }
+        }
+        return "network_error";
+    }
+    "internal_error"
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -63,7 +87,10 @@ async fn handle_line(http: Arc<reqwest::Client>, line: &str) {
 
     match result {
         Ok(value) => write_response(&RpcResponse::ok(&id, value)),
-        Err(e) => write_response(&RpcResponse::err(&id, "internal_error", format!("{e:#}"))),
+        Err(e) => {
+            let code = classify_error_code(&e);
+            write_response(&RpcResponse::err(&id, code, format!("{e:#}")));
+        }
     }
 }
 

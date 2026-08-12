@@ -27,7 +27,14 @@ export async function completeMicrosoftLogin(
 ): Promise<AccountRecord> {
   const { accessToken, refreshToken } = await msa.pollForToken(deviceCode, pollIntervalSeconds, expiresInSeconds);
   const session = await msa.completeMinecraftLogin(accessToken, refreshToken);
-  const account = await saveMicrosoftAccount(session.minecraftUsername, session.minecraftUuid, session.msaRefreshToken);
+  // The Minecraft access token is passed along so the account row can embed a real
+  // avatar (cropped skin head) immediately — never a disposable third-party URL.
+  const account = await saveMicrosoftAccount(
+    session.minecraftUsername,
+    session.minecraftUuid,
+    session.msaRefreshToken,
+    session.minecraftAccessToken
+  );
 
   // A freshly added account should become active immediately, matching how offline
   // profile creation already behaves — the person just went through a login flow,

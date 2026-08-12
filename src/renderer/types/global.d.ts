@@ -7,6 +7,7 @@ import type {
   DownloadProgressPayload,
   DownloadCompletePayload,
   ForgeVersion,
+  FabricLoaderVersion,
   ForgeInstallProgressPayload,
   GameOutputPayload,
   GameExitPayload,
@@ -49,10 +50,12 @@ declare global {
       startMicrosoftLogin(): Promise<MicrosoftDeviceCodeInfo>;
       completeMicrosoftLogin(deviceCode: string, pollIntervalSeconds: number, expiresInSeconds: number): Promise<AccountRecord>;
       openExternal(url: string): Promise<void>;
+      refreshAccountProfile(accountId: string): Promise<AccountRecord>;
       launchInstance(id: string, extraGameArgs?: string[]): Promise<{ started: boolean }>;
       listRunningInstances(): Promise<string[]>;
       killInstance(instanceId: string): Promise<void>;
       getForgeVersions(mcVersion: string): Promise<ForgeVersion[]>;
+      getFabricLoaderVersions(mcVersion: string, forceRefresh?: boolean): Promise<FabricLoaderVersion[]>;
       searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult>;
       getModVersions(projectId: string, loader?: ModLoader, gameVersion?: string): Promise<ModrinthVersion[]>;
       installMod(instanceId: string, projectId: string, versionId: string): Promise<InstalledMod>;

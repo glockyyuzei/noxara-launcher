@@ -83,11 +83,20 @@ export function createOfflineProfile(username: string): AccountRecord {
   return rowToRecord(row);
 }
 
-/** Stores a freshly-authenticated Microsoft account. Called after auth/microsoft.ts succeeds. */
+/**
+ * Stores a freshly-authenticated Microsoft account. Called after auth/microsoft.ts succeeds.
+ *
+ * The avatar is embedded as a `data:` URL (cropped head from the account's real skin)
+ * rather than a hot link to a third-party host — third-party avatar URLs can be
+ * unreachable or change, which used to surface as broken images in the account card.
+ * Only if both the skin and the fallback service fail does the account end up with no
+ * avatar (the UI renders a clean initial-based fallback instead of a broken image).
+ */
 export async function saveMicrosoftAccount(
   username: string,
   uuid: string,
-  msaRefreshToken: string
+  msaRefreshToken: string,
+  mcAccessToken?: string
 ): Promise<AccountRecord> {
   const db = getDb();
   const existing = db
@@ -100,7 +109,7 @@ export async function saveMicrosoftAccount(
     kind: "microsoft",
     username,
     uuid,
-    avatar_url: `https://crafatar.com/avatars/${uuid}`,
+    avatar_url: null,
     is_active: existing?.is_active ?? 0,
     created_at: existing?.created_at ?? new Date().toISOString(),
   };
@@ -111,12 +120,63 @@ export async function saveMicrosoftAccount(
      ON CONFLICT(id) DO UPDATE SET username = @username, avatar_url = @avatar_url`
   ).run(row);
 
+  // Build + persist the embedded avatar. Failures here are non-fatal: the account is
+  // already saved and a later "Refresh profile" can repopulate the avatar.
+  if (mcAccessToken) {
+    const avatarUrl = await resolveAccountAvatar(mcAccessToken, uuid);
+    if (avatarUrl) {
+      db.prepare("UPDATE accounts SET avatar_url = ? WHERE id = ?").run(avatarUrl, id);
+      row.avatar_url = avatarUrl;
+    }
+  }
+
   await keytar.setPassword(KEYTAR_SERVICE, id, msaRefreshToken);
 
   if (listAccounts().length === 1) {
     setActiveAccount(id);
   }
   return rowToRecord(row);
+}
+
+/** Builds an embedded avatar data URL via the avatar pipeline (skin head, then crafatar). */
+async function resolveAccountAvatar(mcAccessToken: string, uuid: string): Promise<string | null> {
+  try {
+    const { resolveAvatarDataUrl } = await import("./avatar");
+    return await resolveAvatarDataUrl(mcAccessToken, uuid);
+  } catch (err) {
+    console.warn("[accounts] avatar resolution failed:", err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/**
+ * Re-fetches a Microsoft account's profile (gamertag, UUID, avatar) using a freshly
+ * refreshed session, then persists and returns the up-to-date record. Offline accounts
+ * have no remote profile to refresh and are returned unchanged.
+ */
+export async function refreshAccountProfile(accountId: string): Promise<AccountRecord> {
+  const account = getAccountById(accountId);
+  if (!account) throw new Error("Account not found.");
+  if (account.kind === "offline") return account;
+
+  // resolveMinecraftSession refreshes MSA -> Xbox -> XSTS -> Minecraft tokens and
+  // persists the rotated refresh token, giving us a live Minecraft access token.
+  const session = await resolveMinecraftSession(accountId);
+
+  // The freshly-derived Minecraft profile is authoritative for name + avatar.
+  const { fetchProfileForAvatar } = await import("../auth/microsoft");
+  const profile = await fetchProfileForAvatar(session.accessToken);
+  const avatarUrl = await resolveAccountAvatar(session.accessToken, profile.id);
+
+  const db = getDb();
+  db.prepare("UPDATE accounts SET username = ?, uuid = ?, avatar_url = ? WHERE id = ?").run(
+    profile.name,
+    profile.id,
+    avatarUrl,
+    accountId
+  );
+
+  return getAccountById(accountId) ?? account;
 }
 
 export async function getMicrosoftRefreshToken(accountId: string): Promise<string | null> {

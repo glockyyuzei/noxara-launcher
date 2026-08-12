@@ -10,6 +10,7 @@ import * as launchService from "../services/launch";
 import * as modrinthService from "../services/modrinth";
 import * as modsService from "../services/mods";
 import * as forgeService from "../services/forge";
+import * as fabricService from "../services/fabric";
 import * as skinsService from "../services/skins";
 import * as contentService from "../services/content";
 import * as serversService from "../services/servers";
@@ -75,11 +76,21 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     })
   );
 
+  ipcMain.handle(
+    IPC_CHANNELS.refreshAccountProfile,
+    safe((_e, accountId: string) => accountsService.refreshAccountProfile(accountId))
+  );
+
   ipcMain.handle(IPC_CHANNELS.launchInstance, safe((_e, id: string, extraGameArgs?: string[]) => launchService.launchInstance(id, extraGameArgs)));
   ipcMain.handle(IPC_CHANNELS.listRunningInstances, safe(() => launchService.listRunningInstances()));
   ipcMain.handle(IPC_CHANNELS.killInstance, safe((_e, instanceId: string) => launchService.killInstance(instanceId)));
 
   ipcMain.handle(IPC_CHANNELS.getForgeVersions, safe((_e, mcVersion: string) => forgeService.getForgeVersions(mcVersion)));
+
+  ipcMain.handle(
+    IPC_CHANNELS.getFabricLoaderVersions,
+    safe((_e, mcVersion: string, forceRefresh?: boolean) => fabricService.getFabricLoaderVersions(mcVersion, { forceRefresh }))
+  );
 
   ipcMain.handle(
     IPC_CHANNELS.searchMods,

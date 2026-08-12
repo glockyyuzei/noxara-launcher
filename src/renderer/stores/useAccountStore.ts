@@ -23,6 +23,7 @@ interface AccountState {
   refresh: () => Promise<void>;
   switchAccount: (id: string) => Promise<void>;
   createOffline: (username: string) => Promise<AccountRecord>;
+  refreshProfile: (id: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
 }
 
@@ -61,6 +62,13 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     const account = await window.noxara.createOfflineProfile(username);
     await get().refresh();
     return account;
+  },
+
+  refreshProfile: async (id: string) => {
+    // Ask the main process to re-derive the account's Microsoft profile (gamertag,
+    // UUID, embedded avatar). No-ops without refresh for stale/broken avatar URLs.
+    await window.noxara.refreshAccountProfile(id);
+    await get().refresh();
   },
 
   remove: async (id: string) => {

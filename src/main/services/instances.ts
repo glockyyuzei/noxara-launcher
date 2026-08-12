@@ -5,7 +5,7 @@ import { shell } from "electron";
 import { getDb } from "./database";
 import { instanceDir, slugifyInstanceName } from "../filesystem/paths";
 import type { CreateInstanceInput, InstanceRecord } from "../../shared/types/ipc";
-import { getLatestFabricLoaderVersion } from "./fabric";
+import { resolveFabricLoaderVersion } from "./fabric";
 import { getForgeVersions } from "./forge";
 
 interface InstanceRow {
@@ -93,9 +93,12 @@ export async function createInstance(input: CreateInstanceInput): Promise<Instan
 
   // Resolve a real, currently-published loader version instead of trusting a
   // placeholder from the UI — this is what actually gets installed and launched.
+  // Fabric additionally gets validated against the actually-published loader builds
+  // for the selected Minecraft version (an unsupported version fails clearly here,
+  // before any instance directory is created).
   let resolvedLoaderVersion = input.loaderVersion ?? null;
-  if (input.loader === "fabric" && (!resolvedLoaderVersion || resolvedLoaderVersion === "latest")) {
-    resolvedLoaderVersion = await getLatestFabricLoaderVersion(input.minecraftVersion);
+  if (input.loader === "fabric") {
+    resolvedLoaderVersion = await resolveFabricLoaderVersion(input.minecraftVersion, resolvedLoaderVersion);
   } else if (input.loader === "forge") {
     // Forge's own installer/processor pipeline only actually runs on first launch (it
     // needs a resolved Java runtime, which we don't have yet during instance creation —

@@ -227,7 +227,10 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
   let versionDetail: any = vanillaDetail;
 
   if (instance.loader === "fabric") {
-    ({ detail: versionDetail } = await getFabricVersionDetail(instance.minecraft_version, instance.loader_version ?? ""));
+    if (!instance.loader_version) {
+      throw new Error("This instance has no Fabric Loader version recorded — try recreating it.");
+    }
+    ({ detail: versionDetail } = await getFabricVersionDetail(instance.minecraft_version, instance.loader_version));
   } else if (instance.loader === "forge") {
     if (!instance.loader_version) {
       throw new Error("This instance has no Forge version recorded — try recreating it.");
