@@ -11,11 +11,24 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::Child;
 use tokio::process::Command;
 
 use crate::mojang::VersionDetail;
 use crate::protocol::write_event;
+
+/// Tracks every launched Minecraft JVM by instance id so the launcher can report the
+/// true process state on demand (`launch.running`) and terminate it (`launch.stop`)
+/// without relying on renderer-side guesses. A child is inserted right after spawn
+/// and removed once its exit status has been observed.
+static RUNNING: OnceLock<Mutex<HashMap<String, Child>>> = OnceLock::new();
+
+fn running_registry() -> &'static Mutex<HashMap<String, Child>> {
+    RUNNING.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Deserialize)]
 pub struct LaunchAccount {
@@ -57,6 +70,12 @@ pub struct GameExitEvent {
     pub instance_id: String,
     pub code: Option<i32>,
     pub crashed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GameStartedEvent {
+    pub instance_id: String,
+    pub pid: u32,
 }
 
 /// Evaluates a Mojang "rules" array (OS/feature gating on libraries and arguments).
@@ -371,7 +390,9 @@ fn redact(line: &str, secrets: &[String]) -> String {
 }
 
 /// Spawns the JVM without a shell, streams stdout/stderr as `game.output` events,
-/// and emits `game.exit` on completion with a best-effort crash determination.
+/// emits `game.started` on a successful spawn and `game.exit` on completion with a
+/// best-effort crash determination. The child is registered so `running_instances`
+/// / `stop_instance` can inspect and kill it from anywhere in the process.
 pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, access_token_to_redact: &str) -> Result<()> {
     let mut child = Command::new(&instance.java_path)
         .args(&args)
@@ -382,12 +403,22 @@ pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, acc
         .spawn()
         .context("failed to spawn Java process")?;
 
+    let instance_id = instance.instance_id.clone();
+    write_event(
+        "game.started",
+        GameStartedEvent {
+            instance_id: instance_id.clone(),
+            pid: child.id().unwrap_or(0),
+        },
+    );
+
     let stdout = child.stdout.take().context("no stdout handle")?;
     let stderr = child.stderr.take().context("no stderr handle")?;
-    let instance_id = instance.instance_id.clone();
     // Own the secret as a String so it can be moved into 'static tokio::spawn tasks —
     // borrowing the &str param directly doesn't satisfy tokio::spawn's 'static bound.
     let redacted_token = access_token_to_redact.to_string();
+
+    running_registry().lock().unwrap().insert(instance_id.clone(), child);
 
     let id_out = instance_id.clone();
     let secrets_out = vec![redacted_token.clone()];
@@ -421,9 +452,28 @@ pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, acc
         }
     });
 
-    let status = child.wait().await.context("failed waiting on Java process")?;
+    let status: Option<i32> = loop {
+        match running_registry().lock().unwrap().get_mut(&instance_id) {
+            // Reap the status when the OS has observed the process exit. `stop_instance`
+            // may have already sent a kill signal; `try_wait()` will surface that exit
+            // on a later poll. The lock is never held across the sleep below, so
+            // `launch.running`/`launch.stop` RPCs stay responsive for the whole session.
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => break status.code(),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("failed waiting on Java process: {e:#}");
+                    break None;
+                }
+            },
+            // Removed concurrently (shouldn't happen while the waiter owns the id).
+            None => break None,
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
     let _ = out_task.await;
     let _ = err_task.await;
+    running_registry().lock().unwrap().remove(&instance_id);
 
     // A crash is inferred, never asserted with false certainty (spec section 41):
     // any non-zero, non-user-terminated exit is reported as "possible crash" upstream.
@@ -431,10 +481,45 @@ pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, acc
         "game.exit",
         GameExitEvent {
             instance_id,
-            code: status.code(),
-            crashed: !status.success(),
+            code: status,
+            crashed: status != Some(0),
         },
     );
 
     Ok(())
+}
+
+/// Returns the instance ids whose tracked Minecraft JVM is still alive (based on
+/// `try_wait`, i.e. the real OS process state — not anything the launcher UI assumes).
+pub fn running_instances() -> Vec<String> {
+    let mut reg = running_registry().lock().unwrap();
+    let mut running = Vec::new();
+    reg.retain(|id, child| {
+        let alive = match child.try_wait() {
+            Ok(Some(_)) => false, // exited already — drop from the registry
+            _ => true,            // still running (or wait error — treat as running)
+        };
+        if alive {
+            running.push(id.clone());
+        }
+        alive
+    });
+    running
+}
+
+/// Terminates the tracked Minecraft JVM for an instance. No-op if nothing is running.
+/// Uses `start_kill` (synchronous signal) so the mutex guard never crosses an await —
+/// the exit waiter in `launch_and_stream` reaps it and emits `game.exit` as usual.
+pub async fn stop_instance(instance_id: &str) -> bool {
+    let mut reg = running_registry().lock().unwrap();
+    let Some(child) = reg.get_mut(instance_id) else {
+        return false;
+    };
+    match child.start_kill() {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("failed to kill instance {instance_id}: {e:#}");
+            false
+        }
+    }
 }

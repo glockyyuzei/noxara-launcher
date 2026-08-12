@@ -95,6 +95,11 @@ export interface GameExitPayload {
   crashed: boolean;
 }
 
+export interface GameStartedPayload {
+  instanceId: string;
+  pid: number;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Forge                                                                       */
 /* -------------------------------------------------------------------------- */
@@ -152,6 +157,8 @@ export interface ModSearchQuery {
   sort?: ModSearchSort;
   offset?: number;
   limit?: number;
+  /** Which Modrinth project type to search for. Defaults to "mod". */
+  projectType?: "mod" | ContentCategory;
 }
 
 export interface ModrinthVersionFile {
@@ -181,7 +188,9 @@ export interface InstalledMod {
   instanceId: string;
   name: string;
   version: string;
-  source: "modrinth" | "local";
+  /** "modpack" marks mods that were installed as part of a modpack (uninstalling the
+   * pack removes them together). */
+  source: "modrinth" | "modpack" | "local";
   sourceId: string | null;
   sourceVersionId: string | null;
   filename: string;
@@ -207,6 +216,104 @@ export interface ModDownloadCompletePayload {
   taskId: string;
   success: boolean;
   error?: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Content (resource packs, shaders, modpacks)                                 */
+/* -------------------------------------------------------------------------- */
+
+export type ContentCategory = "resourcepack" | "shader" | "modpack";
+
+export interface ContentSearchQuery {
+  query: string;
+  projectType: "mod" | ContentCategory;
+  loader?: ModLoader;
+  gameVersion?: string;
+  sort?: ModSearchSort;
+  offset?: number;
+  limit?: number;
+}
+
+export interface InstalledContent {
+  id: string;
+  instanceId: string;
+  category: ContentCategory;
+  name: string;
+  version: string;
+  source: "modrinth" | "local";
+  sourceId: string | null;
+  sourceVersionId: string | null;
+  filename: string;
+  enabled: boolean;
+  fileExists: boolean;
+  /** Present for modpacks: JSON describing the files the pack installed so they
+   * can be uninstalled individually. */
+  manifest?: string;
+}
+
+export interface ContentDownloadProgressPayload {
+  taskId: string;
+  name: string;
+  category: ContentCategory;
+  instanceId: string;
+  bytesDownloaded: number;
+  totalBytes: number;
+}
+
+export interface ContentDownloadCompletePayload {
+  taskId: string;
+  category: ContentCategory;
+  success: boolean;
+  error?: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Servers                                                                    */
+/* -------------------------------------------------------------------------- */
+
+export interface ServerRecord {
+  id: string;
+  name: string;
+  address: string;
+  port: number;
+  iconData: string | null;
+  favorite: boolean;
+  /** Null means the server appears in every instance's list. */
+  instanceId: string | null;
+  createdAt: string;
+}
+
+export interface ServerInput {
+  name: string;
+  address: string;
+  port?: number;
+  iconData?: string | null;
+  instanceId?: string | null;
+  /** Toggles whether the server is starred. (addServer always records false.) */
+  favorite?: boolean;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Settings                                                                   */
+/* -------------------------------------------------------------------------- */
+
+export interface LauncherSettings {
+  /** Absolute directory new instances are created under. Empty = default. */
+  gameDir: string;
+  /** Optional default Java executable used when an instance has none pinned. */
+  defaultJavaPath: string;
+  /** When true (default) the launcher auto-detects the best Java; when false it uses
+   * `defaultJavaPath` (when set) instead. */
+  autoDetectJava: boolean;
+  defaultMinRamMb: number;
+  defaultMaxRamMb: number;
+  launchWidth: number;
+  launchHeight: number;
+  minimizeOnLaunch: boolean;
+  closeOnLaunch: boolean;
+  startMinimized: boolean;
+  showSnapshots: boolean;
+  maxConcurrentDownloads: number;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -248,7 +355,13 @@ export interface NoxaraApi {
   openExternal(url: string): Promise<void>;
 
   // Launch
-  launchInstance(instanceId: string): Promise<{ started: boolean }>;
+  /**
+   * Starts an instance. `extraGameArgs` (e.g. `["--server", "mc.example.com", "--port", "25565"]`
+   * to join a multiplayer server on launch) are appended to the game arguments verbatim.
+   */
+  launchInstance(instanceId: string, extraGameArgs?: string[]): Promise<{ started: boolean }>;
+  listRunningInstances(): Promise<string[]>;
+  killInstance(instanceId: string): Promise<void>;
 
   // Forge
   getForgeVersions(mcVersion: string): Promise<ForgeVersion[]>;
@@ -260,6 +373,26 @@ export interface NoxaraApi {
   listInstalledMods(instanceId: string): Promise<InstalledMod[]>;
   removeMod(instanceId: string, modId: string): Promise<void>;
   checkModUpdates(instanceId: string): Promise<ModUpdateInfo[]>;
+
+  // Content (resource packs / shaders / modpacks via Modrinth)
+  installContent(instanceId: string, versionId: string, category: ContentCategory): Promise<InstalledContent>;
+  listInstalledContent(instanceId: string, category: ContentCategory): Promise<InstalledContent[]>;
+  removeContent(instanceId: string, itemId: string, category: ContentCategory): Promise<void>;
+  setContentEnabled(instanceId: string, itemId: string, category: ContentCategory, enabled: boolean): Promise<void>;
+
+  // Servers
+  listServers(instanceId?: string | null): Promise<ServerRecord[]>;
+  addServer(input: ServerInput): Promise<ServerRecord>;
+  updateServer(id: string, input: Partial<ServerInput>): Promise<ServerRecord>;
+  removeServer(id: string): Promise<void>;
+
+  // Settings
+  getSettings(): Promise<LauncherSettings>;
+  setSettings(partial: Partial<LauncherSettings>): Promise<LauncherSettings>;
+
+  // Native pickers (used by Settings to choose a game directory / Java executable)
+  pickFolder(title: string): Promise<string | null>;
+  pickJavaExecutable(): Promise<string | null>;
 
   // Skins (local only — see skins.ts for what is/isn't actually applied in-game)
   listSkins(): Promise<SkinRecord[]>;
@@ -301,6 +434,20 @@ export const IPC_CHANNELS = {
   listInstalledMods: "noxara:mods:listInstalled",
   removeMod: "noxara:mods:remove",
   checkModUpdates: "noxara:mods:checkUpdates",
+  installContent: "noxara:content:install",
+  listInstalledContent: "noxara:content:listInstalled",
+  removeContent: "noxara:content:remove",
+  setContentEnabled: "noxara:content:setEnabled",
+  listServers: "noxara:servers:list",
+  addServer: "noxara:servers:add",
+  updateServer: "noxara:servers:update",
+  removeServer: "noxara:servers:remove",
+  getSettings: "noxara:settings:get",
+  setSettings: "noxara:settings:set",
+  pickFolder: "noxara:shell:pickFolder",
+  pickJavaExecutable: "noxara:shell:pickJavaExecutable",
+  listRunningInstances: "noxara:launch:running",
+  killInstance: "noxara:launch:kill",
   listSkins: "noxara:skins:list",
   uploadSkin: "noxara:skins:upload",
   deleteSkin: "noxara:skins:delete",
@@ -316,7 +463,10 @@ export const IPC_CHANNELS = {
   eventDownloadComplete: "noxara:event:downloadComplete",
   eventGameOutput: "noxara:event:gameOutput",
   eventGameExit: "noxara:event:gameExit",
+  eventGameStarted: "noxara:event:gameStarted",
   eventModDownloadProgress: "noxara:event:modDownloadProgress",
   eventModDownloadComplete: "noxara:event:modDownloadComplete",
+  eventContentDownloadProgress: "noxara:event:contentDownloadProgress",
+  eventContentDownloadComplete: "noxara:event:contentDownloadComplete",
   eventForgeInstallProgress: "noxara:event:forgeInstallProgress",
 } as const;

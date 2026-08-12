@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Upload, Trash2, Pencil, Check, Loader2 } from "lucide-react";
+import { Upload, Trash2, Pencil, Check, Loader2, Shirt } from "lucide-react";
 import type { SkinRecord } from "@shared/types/ipc";
 import { useAccountStore } from "../stores/useAccountStore";
 import { toast } from "../stores/useToastStore";
@@ -7,6 +7,8 @@ import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Alert } from "../components/ui/alert";
 import { Separator } from "../components/ui/separator";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -26,8 +28,9 @@ export default function SkinsPage() {
   const [renameValue, setRenameValue] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const activeAccount = useAccountStore((s) => s.activeAccount);
-  const account = activeAccount();
+  // Select the active account by value (not via the stable `activeAccount()` helper),
+  // so the component re-renders when the account list or active account changes.
+  const account = useAccountStore((s) => s.accounts.find((a) => a.isActive) ?? null);
   const [appliedSkinId, setAppliedSkinId] = useState<string | null>(null);
 
   async function refresh() {
@@ -69,9 +72,16 @@ export default function SkinsPage() {
     try {
       // This calls all the way through to Mojang's real skin service for Microsoft
       // accounts — the UI only shows "Applied" after that succeeds, never before.
+      // For offline accounts the selection is persisted locally and carried into the
+      // instance's game directory on every launch (see skins.ts / launch.ts).
       await window.noxara.applySkin(account.id, skinId);
       setAppliedSkinId(skinId);
-      toast.success("Skin applied", "Your in-game skin has been updated.");
+      toast.success(
+        "Skin applied",
+        account.kind === "offline"
+          ? "Saved to your offline profile — it accompanies your launches."
+          : "Your in-game skin has been updated."
+      );
     } catch (e) {
       toast.error("Couldn't apply skin", e instanceof Error ? e.message : undefined);
     } finally {
@@ -96,17 +106,17 @@ export default function SkinsPage() {
   const isOffline = account?.kind === "offline";
 
   return (
-    <div className="p-6 md:p-10 max-w-4xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-xl md:text-2xl font-semibold text-noxara-white">Skins</h1>
-        <p className="text-sm text-noxara-muted mt-1">Manage and apply your Minecraft skins.</p>
-      </div>
+    <div className="p-4 md:p-6 max-w-4xl mx-auto">
+      <PageHeader title="Skins" subtitle="Manage and apply your Minecraft skins." />
 
       {isOffline && (
-        <Alert variant="default" title="Signed in with an offline profile" className="mb-6">
-          Mojang's skin service only works for a signed-in Microsoft account — offline profiles have
-          no real Minecraft profile to apply a skin to. You can still store and preview skins here;
-          sign in with Microsoft to apply one in-game.
+        <Alert variant="default" title="Offline profile" className="mb-6">
+          Offline profiles have no Mojang account to upload a skin to, so applying one
+          stores it on your profile and carries it into the instance on every launch —
+          as <span className="font-mono">noxara-skin.png</span> in the game directory and
+          as a CustomSkinLoader local skin, so supported skins actually render in-game.
+          Microsoft accounts get their skin uploaded to Mojang's real skin service
+          instead — visible in any launcher and in vanilla Minecraft.
         </Alert>
       )}
 
@@ -138,12 +148,21 @@ export default function SkinsPage() {
           ))}
         </div>
       ) : skins.length === 0 ? (
-        <div className="yz-card p-10 text-center">
-          <p className="text-sm text-noxara-muted mb-4">You haven't uploaded any skins yet.</p>
-          <Button variant="primary" size="sm" onClick={() => fileInputRef.current?.click()} className="mx-auto">
-            <Upload size={14} /> Upload Skin
-          </Button>
-        </div>
+        <EmptyState
+          icon={Shirt}
+          title="No skins yet"
+          description="Upload a skin to store, preview, and apply it."
+          action={
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              className="mx-auto"
+            >
+              <Upload size={14} /> Upload Skin
+            </Button>
+          }
+        />
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
           {skins.map((skin) => {
@@ -152,7 +171,7 @@ export default function SkinsPage() {
             return (
               <div
                 key={skin.id}
-                className={`yz-card p-3 group transition-all duration-200 ${
+                className={`yz-card p-3 group transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-hover ${
                   isApplied ? "border-noxara-success/40" : "hover:border-noxara-border-strong"
                 }`}
               >

@@ -5,13 +5,15 @@
 import path from "node:path";
 import fs from "node:fs";
 import { app } from "electron";
+import { getSettings } from "../services/settings";
 
 export function rootDir(): string {
   return path.join(app.getPath("userData"));
 }
 
 export function instancesDir(): string {
-  const dir = path.join(rootDir(), "instances");
+  // Honors the user's "Game directory" setting; empty means the launcher default.
+  const dir = getSettings().gameDir.trim() || path.join(rootDir(), "instances");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { Download, Users, X, ChevronLeft } from "lucide-react";
-import type { InstanceRecord, ModrinthSearchHit, ModrinthVersion } from "@shared/types/ipc";
+import type {
+  ContentCategory,
+  InstanceRecord,
+  ModrinthSearchHit,
+  ModrinthVersion,
+} from "@shared/types/ipc";
 
 function formatCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -16,12 +21,19 @@ function formatDate(iso: string): string {
   }
 }
 
+const CATEGORY_LABEL: Record<ContentCategory | "mod", string> = {
+  mod: "mod",
+  resourcepack: "resource pack",
+  shader: "shader",
+  modpack: "modpack",
+};
+
 /**
- * Shows mod details and lets the user install directly into a chosen instance —
+ * Shows mod/content details and lets the user install directly into a chosen instance —
  * this is the in-app replacement for what used to be `window.open(modrinth.com/...)`.
  *
  * Installation is a two-step, fully user-driven flow: pick the target instance, then
- * pick the exact mod version to install from the list of versions actually compatible
+ * pick the exact version to install from the list of versions actually compatible
  * with that instance's Minecraft version + loader. Nothing here ever silently installs
  * `versions[0]` on the user's behalf.
  */
@@ -34,6 +46,7 @@ export function ModDetailsModal({
   onInstall,
   onClose,
   initialInstance,
+  category = "mod",
 }: {
   mod: ModrinthSearchHit;
   moddableInstances: InstanceRecord[];
@@ -41,6 +54,7 @@ export function ModDetailsModal({
   onInstall: (instanceId: string, mod: ModrinthSearchHit, versionId: string) => void;
   onClose: () => void;
   initialInstance?: InstanceRecord;
+  category?: ContentCategory | "mod";
 }) {
   const [selectedInstance, setSelectedInstance] = useState<InstanceRecord | null>(initialInstance ?? null);
   const [versions, setVersions] = useState<ModrinthVersion[]>([]);
@@ -56,8 +70,16 @@ export function ModDetailsModal({
     setVersionsError(null);
     setVersions([]);
     setSelectedVersionId(null);
+    // Resource packs and shaders aren't loader-scoped on Modrinth — only mods and
+    // modpacks are, so only those filter versions by the instance's loader. Filtering
+    // a resource pack by "fabric" returns no versions, since those projects tag none.
+    const needsLoader = category === "mod" || category === "modpack";
     window.noxara
-      .getModVersions(mod.projectId, selectedInstance.loader as any, selectedInstance.minecraftVersion)
+      .getModVersions(
+        mod.projectId,
+        needsLoader ? (selectedInstance.loader as any) : undefined,
+        selectedInstance.minecraftVersion
+      )
       .then((list) => {
         if (cancelled) return;
         setVersions(list);
@@ -75,10 +97,19 @@ export function ModDetailsModal({
     return () => {
       cancelled = true;
     };
-  }, [selectedInstance, mod.projectId]);
+  }, [selectedInstance, mod.projectId, category]);
 
-  const installKey = selectedInstance ? `${selectedInstance.id}:${mod.projectId}` : null;
+  const needsLoader = category === "mod" || category === "modpack";
+  // Mod store keys `installingKeys` as `${instanceId}:${projectId}`; the content store
+  // keys them as `${category}:${instanceId}:${projectId}`. Build whichever one belongs
+  // to this category so the in-flight installing state lights up correctly.
+  const installKey = selectedInstance
+    ? category === "mod"
+      ? `${selectedInstance.id}:${mod.projectId}`
+      : `${category}:${selectedInstance.id}:${mod.projectId}`
+    : null;
   const installing = installKey ? installingKeys.has(installKey) : false;
+  const noun = CATEGORY_LABEL[category as ContentCategory];
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-8 animate-fade-in">
@@ -115,11 +146,12 @@ export function ModDetailsModal({
         <p className="text-sm text-noxara-subtle mb-4">{mod.description}</p>
 
         <div className="flex flex-wrap gap-1.5 mb-5">
-          {mod.loaders.map((l) => (
-            <span key={l} className="px-2 py-0.5 rounded text-xs bg-noxara-elevated border border-noxara-border capitalize">
-              {l}
-            </span>
-          ))}
+          {needsLoader &&
+            mod.loaders.map((l) => (
+              <span key={l} className="px-2 py-0.5 rounded text-xs bg-noxara-elevated border border-noxara-border capitalize">
+                {l}
+              </span>
+            ))}
           {mod.categories.slice(0, 4).map((c) => (
             <span key={c} className="px-2 py-0.5 rounded text-xs bg-noxara-surface border border-noxara-border text-noxara-muted capitalize">
               {c}
@@ -133,7 +165,9 @@ export function ModDetailsModal({
               <h3 className="text-xs yz-label mb-2">Install to Instance</h3>
               {moddableInstances.length === 0 ? (
                 <p className="text-sm text-noxara-muted">
-                  You don't have any Fabric/Forge instances yet — vanilla instances can't run mods.
+                  {needsLoader
+                    ? "You don't have any Fabric/Forge instances yet — vanilla instances can't run these."
+                    : "You don't have any instances yet — create one to install this."}
                 </p>
               ) : (
                 <div className="space-y-1.5 max-h-52 overflow-y-auto">
@@ -201,7 +235,7 @@ export function ModDetailsModal({
                 disabled={!selectedVersionId || installing}
                 className="yz-btn-primary w-full text-sm py-2 disabled:opacity-50"
               >
-                {installing ? "Installing…" : "Install"}
+                {installing ? "Installing…" : `Install ${noun}`}
               </button>
             </>
           )}

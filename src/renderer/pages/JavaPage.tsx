@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Coffee } from "lucide-react";
 import type { JavaInstallation } from "@shared/types/ipc";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
 
 export default function JavaPage() {
   const [installs, setInstalls] = useState<JavaInstallation[]>([]);
@@ -23,29 +25,47 @@ export default function JavaPage() {
   }
 
   return (
-    <div className="p-8 max-w-2xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-semibold">Java Manager</h1>
-        <button onClick={refresh} className="yz-btn-secondary">
-          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-          Rescan
-        </button>
-      </div>
+    <div className="p-4 md:p-6 max-w-3xl mx-auto">
+      <PageHeader
+        title="Java"
+        subtitle="Detected Java runtimes and custom paths used to launch instances."
+        actions={
+          <button onClick={refresh} className="yz-btn-secondary">
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+            Rescan
+          </button>
+        }
+      />
 
       <div className="space-y-2 mb-8">
-        {installs.map((j) => (
-          <div key={j.path} className="yz-card px-4 py-3 flex items-center justify-between">
-            <div>
-              <div className="text-sm font-medium">Java {j.majorVersion} {j.vendor ? `· ${j.vendor}` : ""}</div>
-              <div className="text-xs text-noxara-muted font-mono truncate max-w-md">{j.path}</div>
+        {loading ? (
+          <>
+            {Array.from({ length: 3 }).map((_, i) => (
+              <div key={i} className="yz-card px-4 py-3">
+                <div className="yz-skeleton h-4 w-40 rounded mb-2" />
+                <div className="yz-skeleton h-3 w-64 rounded" />
+              </div>
+            ))}
+          </>
+        ) : (
+          installs.map((j) => (
+            <div key={j.path} className="yz-card px-4 py-3 flex items-center justify-between">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-noxara-text">
+                  Java {j.majorVersion} {j.vendor ? `· ${j.vendor}` : ""}
+                </div>
+                <div className="text-xs text-noxara-muted font-mono truncate max-w-md">{j.path}</div>
+              </div>
+              <span className="text-xs text-noxara-subtle shrink-0">{j.is64bit ? "64-bit" : "32-bit"}</span>
             </div>
-            <span className="text-xs text-noxara-subtle">{j.is64bit ? "64-bit" : "32-bit"}</span>
-          </div>
-        ))}
+          ))
+        )}
         {!loading && installs.length === 0 && (
-          <div className="yz-card p-8 text-center text-sm text-noxara-muted">
-            No Java installations detected. Add a custom path below, or install Java manually.
-          </div>
+          <EmptyState
+            icon={Coffee}
+            title="No Java installations detected"
+            description="Add a custom path below, or install Java manually."
+          />
         )}
       </div>
 

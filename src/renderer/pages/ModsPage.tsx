@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Search, X } from "lucide-react";
+import { Search, X, SearchX, TriangleAlert } from "lucide-react";
 import type { InstanceRecord, ModLoader, ModSearchSort, ModrinthSearchHit } from "@shared/types/ipc";
 import { useModStore } from "../stores/useModStore";
 import { ModCard } from "../components/ModCard";
 import { ModDetailsModal } from "../components/ModDetailsModal";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
 import { toast } from "../stores/useToastStore";
 
 const LOADER_TABS: { id: ModLoader | "all"; label: string }[] = [
@@ -94,11 +96,8 @@ export default function ModsPage() {
   }
 
   return (
-    <div className="p-6 md:p-10 max-w-4xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-xl md:text-2xl font-semibold text-noxara-white">Mods</h1>
-        <p className="text-sm text-noxara-muted mt-1">Browse and install mods from Modrinth.</p>
-      </div>
+    <div className="p-4 md:p-6 max-w-4xl mx-auto">
+      <PageHeader title="Mods" subtitle="Browse and install mods from Modrinth." />
 
       <div className="relative mb-4">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-noxara-muted" />
@@ -138,7 +137,7 @@ export default function ModsPage() {
         <select
           value={sort}
           onChange={(e) => setSort(e.target.value as ModSearchSort)}
-          className="yz-input py-1.5 text-xs w-auto"
+          className="yz-select py-1.5 text-xs w-auto"
         >
           {SORT_OPTIONS.map((o) => (
             <option key={o.id} value={o.id}>
@@ -149,7 +148,7 @@ export default function ModsPage() {
         <select
           value={gameVersion}
           onChange={(e) => setGameVersion(e.target.value)}
-          className="yz-input py-1.5 text-xs w-auto"
+          className="yz-select py-1.5 text-xs w-auto"
         >
           <option value="all">Any Minecraft version</option>
           {mcVersions.map((v) => (
@@ -167,16 +166,22 @@ export default function ModsPage() {
           ))}
         </div>
       ) : searchError ? (
-        <div className="yz-card p-8 text-center">
-          <p className="text-sm text-noxara-error mb-3">{searchError}</p>
-          <button onClick={() => search()} className="yz-btn-secondary text-xs">
-            Retry
-          </button>
-        </div>
+        <EmptyState
+          icon={TriangleAlert}
+          title="Search failed"
+          description={searchError}
+          action={
+            <button onClick={() => search()} className="yz-btn-secondary text-xs">
+              Retry
+            </button>
+          }
+        />
       ) : hits.length === 0 ? (
-        <div className="yz-card p-10 text-center text-sm text-noxara-muted">
-          No mods found. Try another search or filter.
-        </div>
+        <EmptyState
+          icon={SearchX}
+          title="No mods found"
+          description="Try another search or filter."
+        />
       ) : (
         <>
           <div className="flex items-center justify-between mb-2.5">

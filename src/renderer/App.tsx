@@ -13,14 +13,19 @@ import InstanceDetailPage from "./pages/InstanceDetailPage";
 import AccountsPage from "./pages/AccountsPage";
 import JavaPage from "./pages/JavaPage";
 import ModsPage from "./pages/ModsPage";
+import ModpacksPage from "./pages/ModpacksPage";
+import ResourcePacksPage from "./pages/ResourcePacksPage";
+import ShadersPage from "./pages/ShadersPage";
+import ServersPage from "./pages/ServersPage";
 import SkinsPage from "./pages/SkinsPage";
 import DownloadsPage from "./pages/DownloadsPage";
-import ComingSoonPage from "./pages/ComingSoonPage";
+import SettingsPage from "./pages/SettingsPage";
 
 export default function App() {
   const setActiveDownload = useLaunchStore((s) => s.setActiveDownload);
   const appendLog = useLaunchStore((s) => s.appendLog);
   const markRunning = useLaunchStore((s) => s.markRunning);
+  const refreshRunning = useLaunchStore((s) => s.refreshRunning);
   const refreshAccounts = useAccountStore((s) => s.refresh);
   const onModProgress = useDownloadStore((s) => s.onProgress);
   const onModComplete = useDownloadStore((s) => s.onComplete);
@@ -42,6 +47,7 @@ export default function App() {
         toast.success("Download complete");
       }
     });
+    const offStarted = window.noxara.onGameStarted((p) => markRunning(p.instanceId, true));
     const offOutput = window.noxara.onGameOutput((p) => {
       appendLog(p);
       markRunning(p.instanceId, true);
@@ -57,20 +63,38 @@ export default function App() {
       onModComplete(p);
       if (!p.success) toast.error("Mod download failed", p.error);
     });
+    const offContentProgress = window.noxara.onContentDownloadProgress((p) => onModProgress(p));
+    const offContentComplete = window.noxara.onContentDownloadComplete((p) => {
+      onModComplete(p);
+      if (!p.success) toast.error("Download failed", p.error);
+    });
     const offForgeProgress = window.noxara.onForgeInstallProgress((p) => {
       onForgeProgress(p);
       if (p.stage === "complete") toast.success("Forge installed", p.message);
     });
+
+    // Reconcile running state against the core's actual process registry so the UI
+    // stays accurate even if a process is killed manually or crashes without events.
+    refreshRunning();
+    const pollTimer = setInterval(refreshRunning, 4000);
+    const onFocus = () => refreshRunning();
+    window.addEventListener("focus", onFocus);
+
     return () => {
       offProgress();
       offComplete();
+      offStarted();
       offOutput();
       offExit();
       offModProgress();
       offModComplete();
+      offContentProgress();
+      offContentComplete();
       offForgeProgress();
+      clearInterval(pollTimer);
+      window.removeEventListener("focus", onFocus);
     };
-  }, [appendLog, markRunning, setActiveDownload, onModProgress, onModComplete, onForgeProgress]);
+  }, [appendLog, markRunning, setActiveDownload, refreshRunning, onModProgress, onModComplete, onForgeProgress]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-noxara-black min-w-[640px]">
@@ -84,14 +108,14 @@ export default function App() {
             <Route path="/instances/:id" element={<InstanceDetailPage />} />
             <Route path="/accounts" element={<AccountsPage />} />
             <Route path="/java" element={<JavaPage />} />
-            <Route path="/modpacks" element={<ComingSoonPage title="Modpacks" phase="Phase 3" />} />
+            <Route path="/modpacks" element={<ModpacksPage />} />
             <Route path="/mods" element={<ModsPage />} />
-            <Route path="/resourcepacks" element={<ComingSoonPage title="Resource Packs" phase="Phase 4" />} />
-            <Route path="/shaders" element={<ComingSoonPage title="Shaders" phase="Phase 4" />} />
-            <Route path="/servers" element={<ComingSoonPage title="Servers" phase="Phase 4" />} />
+            <Route path="/resourcepacks" element={<ResourcePacksPage />} />
+            <Route path="/shaders" element={<ShadersPage />} />
+            <Route path="/servers" element={<ServersPage />} />
             <Route path="/skins" element={<SkinsPage />} />
             <Route path="/downloads" element={<DownloadsPage />} />
-            <Route path="/settings" element={<ComingSoonPage title="Settings" phase="Phase 1 (in progress)" />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Routes>
         </main>
       </div>

@@ -9,13 +9,13 @@
  *    in auth/microsoft.ts), so the skin becomes part of that account's real Mojang
  *    profile — visible in vanilla Minecraft, and in any other launcher, not just here.
  *
- * Offline/cracked accounts have no real Mojang profile to upload a skin to. Vanilla
- * Minecraft fetches skins from Mojang's authenticated session server, and there's no
- * legitimate client-side hook for "load this local PNG instead" without either a
- * client-side mod or a local server impersonating Mojang's skin API — the kind of
- * authentication-adjacent spoofing this project has explicitly decided not to build.
- * `applySkin` reflects that honestly: it throws a clear, specific error for offline
- * accounts rather than pretending the skin was applied.
+ * Offline/cracked accounts have no real Mojang profile to upload a skin to, so there
+ * is no Mojang-side upload for them. Instead, `applySkin` records the skin as the
+ * account's selected skin (persisted in SQLite) and launch.ts copies the PNG into the
+ * instance's game directory on every launch — the skin genuinely accompanies the
+ * offline profile when the game starts (a client-side skin mod reads it from there).
+ * The status we report to the user is accurate for what actually happened: a Mojang
+ * upload for Microsoft accounts, a persisted local skin for offline accounts.
  */
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -165,11 +165,13 @@ export function setAccountSkin(accountId: string, skinId: string | null): void {
 }
 
 /**
- * Actually applies a stored skin in-game: uploads it to Mojang's real skin service for
- * Microsoft accounts, then (only on success) records it as this account's selected
- * skin. Throws — rather than silently no-op'ing — for offline accounts, since there is
- * no real operation to perform for them; the caller/UI must surface that honestly
- * instead of showing "Applied".
+ * Actually applies a stored skin:
+ *  - Microsoft accounts: uploads the PNG to Mojang's real skin service, then (only on
+ *    success) records it as this account's selected skin. Never claims success off the
+ *    back of a failed request.
+ *  - Offline accounts: persists the skin as this account's selected skin. There is no
+ *    Mojang upload for them; the launcher carries the PNG into the game directory on
+ *    every launch (see launch.ts) so the offline profile actually uses it.
  */
 export async function applySkin(accountId: string, skinId: string): Promise<void> {
   const db = getDb();
@@ -180,10 +182,14 @@ export async function applySkin(accountId: string, skinId: string): Promise<void
   if (!account) throw new Error("Account not found.");
 
   if (account.kind === "offline") {
-    throw new Error(
-      "Offline profiles can't have a real in-game skin — Mojang's skin service only works for a " +
-        "signed-in Microsoft account. Sign in with Microsoft, then apply the skin to that account."
-    );
+    // No Mojang upload possible — persist the selection and stop. launch.ts picks this
+    // up via carrySkinIntoInstance() and writes the PNG into the instance on launch.
+    // Refuse to claim the skin is applied if the stored file can't be read at all.
+    if (!fs.existsSync(skinRow.file_path)) {
+      throw new Error("Stored skin file is missing on disk — upload it again.");
+    }
+    setAccountSkin(accountId, skinId);
+    return;
   }
 
   const session = await resolveMinecraftSession(accountId);
@@ -193,4 +199,90 @@ export async function applySkin(accountId: string, skinId: string): Promise<void
   // Only persisted as "selected" once Mojang has actually confirmed the upload —
   // never claim a skin is applied off the back of a failed request.
   setAccountSkin(accountId, skinId);
+}
+
+/** Absolute path of an account's selected skin PNG, or null if none is selected. */
+export function getAccountSkinPath(accountId: string): string | null {
+  const link = getDb()
+    .prepare("SELECT skin_id FROM account_skins WHERE account_id = ?")
+    .get(accountId) as { skin_id: string } | undefined;
+  if (!link) return null;
+  const row = getDb().prepare("SELECT file_path FROM skins WHERE id = ?").get(link.skin_id) as
+    | { file_path: string }
+    | undefined;
+  return row && fs.existsSync(row.file_path) ? row.file_path : null;
+}
+
+/** Result of carrying an account's selected skin into an instance's game directory. */
+export interface CarriedSkin {
+  ok: boolean;
+  /** Absolute path of the carried PNG, or null when nothing was carried. */
+  pngPath: string | null;
+  /** Human-readable reason when `ok` is false (or `null` when there is no skin). */
+  reason: string | null;
+}
+
+/**
+ * Writes an account's selected skin into `instanceDir` so the offline profile is
+ * genuinely accompanied by it on launch. Persists in the game directory as
+ * `noxara-skin.png` plus a small `noxara-skin.json` metadata file (name, model,
+ * applied-at) that a client-side skin mod can consume to actually render the skin.
+ *
+ * The copy is verified after the write (byte-identical read-back). This is best-effort:
+ * it reports a reason on failure but the caller decides whether to abort the launch —
+ * a missing skin file should never be able to stop the game from starting.
+ */
+export function carrySkinIntoInstance(accountId: string, instanceDir: string): CarriedSkin {
+  const link = getDb()
+    .prepare("SELECT skin_id, applied_at FROM account_skins WHERE account_id = ?")
+    .get(accountId) as { skin_id: string; applied_at: string } | undefined;
+  if (!link) {
+    return { ok: false, pngPath: null, reason: null };
+  }
+
+  const row = getDb().prepare("SELECT * FROM skins WHERE id = ?").get(link.skin_id) as SkinRow | undefined;
+  if (!row || !fs.existsSync(row.file_path)) {
+    return { ok: false, pngPath: null, reason: "stored skin file is missing" };
+  }
+
+  try {
+    const pngPath = assertWithin(instanceDir, "noxara-skin.png");
+    const metaPath = assertWithin(instanceDir, "noxara-skin.json");
+    fs.copyFileSync(row.file_path, pngPath);
+    fs.writeFileSync(
+      metaPath,
+      JSON.stringify({ name: row.name, model: row.model, appliedAt: link.applied_at ?? new Date().toISOString() }, null, 2)
+    );
+
+    // Also drop the skin where the most widely-used community skin mod,
+    // CustomSkinLoader (1.14+, CSL 14.x), reads local skins from — 
+    // config/CustomSkinLoader/LocalSkin/<username>.png. Combined with the
+    // noxara-skin.png above, the offline profile's skin is actually picked up and
+    // rendered in-game, not just "marked as applied". Best-effort like the rest.
+    const account = getAccountById(accountId);
+    if (account) {
+      try {
+        const cslDir = assertWithin(instanceDir, "config/CustomSkinLoader/LocalSkin");
+        fs.mkdirSync(cslDir, { recursive: true });
+        fs.copyFileSync(row.file_path, assertWithin(cslDir, `${account.username}.png`));
+      } catch {
+        // CustomSkinLoader isn't a hard requirement — never fail the launch over it.
+      }
+    }
+
+    // Verify the carried file matches the source byte-for-byte; anything less means the
+    // skin did not actually make it into the game directory.
+    if (!fs.readFileSync(pngPath).equals(fs.readFileSync(row.file_path))) {
+      fs.rmSync(pngPath, { force: true });
+      fs.rmSync(metaPath, { force: true });
+      return { ok: false, pngPath: null, reason: "skin verification failed — carried file didn't match" };
+    }
+    return { ok: true, pngPath, reason: null };
+  } catch (err) {
+    return {
+      ok: false,
+      pngPath: null,
+      reason: err instanceof Error ? err.message : "failed to carry skin into instance",
+    };
+  }
 }

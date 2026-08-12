@@ -59,17 +59,18 @@ const SORT_MAP: Record<NonNullable<ModSearchQuery["sort"]>, string> = {
   updated: "updated",
 };
 
-function buildFacets(loader?: ModLoader, gameVersion?: string): string {
-  const facets: string[][] = [["project_type:mod"]];
+function buildFacets(projectType: string, loader?: ModLoader, gameVersion?: string): string {
+  const facets: string[][] = [[`project_type:${projectType}`]];
   if (loader) facets.push([`categories:${loader}`]);
   if (gameVersion) facets.push([`versions:${gameVersion}`]);
   return JSON.stringify(facets);
 }
 
 export async function searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult> {
+  const projectType = query.projectType ?? "mod";
   const raw = await modrinthFetch<ModrinthSearchResponseRaw>("/search", {
     query: query.query ?? "",
-    facets: buildFacets(query.loader, query.gameVersion),
+    facets: buildFacets(projectType, query.loader, query.gameVersion),
     index: SORT_MAP[query.sort ?? "relevance"],
     offset: String(query.offset ?? 0),
     limit: String(query.limit ?? 20),
@@ -83,7 +84,7 @@ export async function searchMods(query: ModSearchQuery): Promise<ModrinthSearchR
   if (raw.hits.length === 0 && query.gameVersion) {
     const widened = await modrinthFetch<ModrinthSearchResponseRaw>("/search", {
       query: query.query ?? "",
-      facets: buildFacets(query.loader, undefined),
+      facets: buildFacets(projectType, query.loader, undefined),
       index: SORT_MAP[query.sort ?? "relevance"],
       offset: String(query.offset ?? 0),
       limit: String(query.limit ?? 20),

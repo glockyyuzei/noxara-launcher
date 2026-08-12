@@ -26,11 +26,16 @@ export default {
         mono: ["JetBrains Mono", "ui-monospace", "monospace"],
       },
       borderRadius: {
-        sm: "4px",
-        DEFAULT: "6px",
-        md: "8px",
-        lg: "10px",
-        xl: "14px",
+        sm: "6px",
+        DEFAULT: "8px",
+        md: "10px",
+        lg: "12px",
+        xl: "16px",
+      },
+      boxShadow: {
+        card: "0 1px 2px 0 rgb(0 0 0 / 0.35)",
+        "card-hover": "0 8px 24px -6px rgb(0 0 0 / 0.5)",
+        popover: "0 16px 40px -8px rgb(0 0 0 / 0.55)",
       },
       transitionDuration: {
         DEFAULT: "150ms",

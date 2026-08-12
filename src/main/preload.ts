@@ -6,17 +6,22 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC_CHANNELS } from "../shared/types/ipc";
 import type {
+  ContentCategory,
+  ContentDownloadCompletePayload,
+  ContentDownloadProgressPayload,
   CreateInstanceInput,
   DownloadCompletePayload,
   DownloadProgressPayload,
   ForgeInstallProgressPayload,
   GameExitPayload,
   GameOutputPayload,
+  GameStartedPayload,
   ModDownloadCompletePayload,
   ModDownloadProgressPayload,
   ModLoader,
   ModSearchQuery,
   MicrosoftDeviceCodeInfo,
+  ServerInput,
 } from "../shared/types/ipc";
 
 const api = {
@@ -41,7 +46,10 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.completeMicrosoftLogin, deviceCode, pollIntervalSeconds, expiresInSeconds),
   openExternal: (url: string) => ipcRenderer.invoke(IPC_CHANNELS.openExternal, url),
 
-  launchInstance: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.launchInstance, id),
+  launchInstance: (id: string, extraGameArgs?: string[]) =>
+    ipcRenderer.invoke(IPC_CHANNELS.launchInstance, id, extraGameArgs),
+  listRunningInstances: () => ipcRenderer.invoke(IPC_CHANNELS.listRunningInstances),
+  killInstance: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.killInstance, instanceId),
 
   getForgeVersions: (mcVersion: string) => ipcRenderer.invoke(IPC_CHANNELS.getForgeVersions, mcVersion),
 
@@ -53,6 +61,25 @@ const api = {
   listInstalledMods: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.listInstalledMods, instanceId),
   removeMod: (instanceId: string, modId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeMod, instanceId, modId),
   checkModUpdates: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.checkModUpdates, instanceId),
+
+  installContent: (instanceId: string, versionId: string, category: ContentCategory) =>
+    ipcRenderer.invoke(IPC_CHANNELS.installContent, instanceId, versionId, category),
+  listInstalledContent: (instanceId: string, category: ContentCategory) =>
+    ipcRenderer.invoke(IPC_CHANNELS.listInstalledContent, instanceId, category),
+  removeContent: (instanceId: string, itemId: string, category: ContentCategory) =>
+    ipcRenderer.invoke(IPC_CHANNELS.removeContent, instanceId, itemId, category),
+  setContentEnabled: (instanceId: string, itemId: string, category: ContentCategory, enabled: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.setContentEnabled, instanceId, itemId, category, enabled),
+
+  listServers: (instanceId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.listServers, instanceId),
+  addServer: (input: ServerInput) => ipcRenderer.invoke(IPC_CHANNELS.addServer, input),
+  updateServer: (id: string, input: Partial<ServerInput>) => ipcRenderer.invoke(IPC_CHANNELS.updateServer, id, input),
+  removeServer: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.removeServer, id),
+
+  getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getSettings),
+  setSettings: (partial: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.setSettings, partial),
+  pickFolder: (title: string) => ipcRenderer.invoke(IPC_CHANNELS.pickFolder, title),
+  pickJavaExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.pickJavaExecutable),
 
   listSkins: () => ipcRenderer.invoke(IPC_CHANNELS.listSkins),
   uploadSkin: (name: string, base64Png: string, model: "classic" | "slim") =>
@@ -84,6 +111,11 @@ const api = {
     ipcRenderer.on(IPC_CHANNELS.eventGameOutput, listener);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.eventGameOutput, listener);
   },
+  onGameStarted: (cb: (payload: GameStartedPayload) => void) => {
+    const listener = (_e: unknown, payload: GameStartedPayload) => cb(payload);
+    ipcRenderer.on(IPC_CHANNELS.eventGameStarted, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventGameStarted, listener);
+  },
   onGameExit: (cb: (payload: GameExitPayload) => void) => {
     const listener = (_e: unknown, payload: GameExitPayload) => cb(payload);
     ipcRenderer.on(IPC_CHANNELS.eventGameExit, listener);
@@ -93,6 +125,16 @@ const api = {
     const listener = (_e: unknown, payload: ModDownloadProgressPayload) => cb(payload);
     ipcRenderer.on(IPC_CHANNELS.eventModDownloadProgress, listener);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.eventModDownloadProgress, listener);
+  },
+  onContentDownloadProgress: (cb: (payload: ContentDownloadProgressPayload) => void) => {
+    const listener = (_e: unknown, payload: ContentDownloadProgressPayload) => cb(payload);
+    ipcRenderer.on(IPC_CHANNELS.eventContentDownloadProgress, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventContentDownloadProgress, listener);
+  },
+  onContentDownloadComplete: (cb: (payload: ContentDownloadCompletePayload) => void) => {
+    const listener = (_e: unknown, payload: ContentDownloadCompletePayload) => cb(payload);
+    ipcRenderer.on(IPC_CHANNELS.eventContentDownloadComplete, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventContentDownloadComplete, listener);
   },
   onModDownloadComplete: (cb: (payload: ModDownloadCompletePayload) => void) => {
     const listener = (_e: unknown, payload: ModDownloadCompletePayload) => cb(payload);

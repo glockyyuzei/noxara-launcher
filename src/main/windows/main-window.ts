@@ -1,6 +1,7 @@
 import { BrowserWindow, app, screen } from "electron";
 import path from "node:path";
 import Store from "electron-store";
+import { getSettings } from "../services/settings";
 
 interface WindowState {
   width: number;
@@ -60,7 +61,15 @@ export function createMainWindow(): BrowserWindow {
   win.on("move", persist);
   win.on("close", persist);
 
-  win.once("ready-to-show", () => win.show());
+  // Start minimized when the user asked for it (Settings → Launcher behavior). The
+  // window is still created on the right monitor; it just never takes focus.
+  const startMinimized = getSettings().startMinimized;
+  win.once("ready-to-show", () => {
+    if (startMinimized && !win.isDestroyed()) {
+      win.minimize();
+    }
+    win.show();
+  });
 
   if (!app.isPackaged) {
     win.loadURL("http://localhost:5173");

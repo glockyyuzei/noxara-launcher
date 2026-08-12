@@ -43,7 +43,7 @@ export function Sidebar() {
     <aside
       className={`${
         collapsed ? "w-16" : "w-56"
-      } shrink-0 flex flex-col bg-noxara-black border-r border-noxara-border transition-[width] duration-200 ease-out`}
+      } shrink-0 flex flex-col bg-noxara-void border-r border-noxara-border transition-[width] duration-200 ease-out`}
     >
       <nav className="flex-1 py-3 px-2.5 space-y-3.5 overflow-y-auto overflow-x-hidden">
         {SECTION_ORDER.map((section) => {
@@ -63,10 +63,10 @@ export function Sidebar() {
                       to={to}
                       end={end}
                       className={({ isActive }) =>
-                        `group flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors duration-150 yz-focus-ring ${
+                        `group flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors duration-150 yz-focus-ring ${
                           isActive
-                            ? "bg-noxara-surface text-noxara-white"
-                            : "text-noxara-subtle hover:text-noxara-text hover:bg-noxara-surface/50"
+                            ? "bg-noxara-elevated text-noxara-white shadow-card"
+                            : "text-noxara-subtle hover:text-noxara-text hover:bg-noxara-surface/60"
                         }`
                       }
                     >

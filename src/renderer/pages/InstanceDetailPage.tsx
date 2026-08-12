@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Play, Copy, FolderOpen, Trash2, Search, X, RefreshCw } from "lucide-react";
+import { Play, X, Copy, FolderOpen, Trash2, Search, RefreshCw, Loader2 } from "lucide-react";
 import type { InstanceRecord, ModrinthSearchHit } from "@shared/types/ipc";
-import { useLaunchStore } from "../stores/useLaunchStore";
+import { useLaunchStore, launchInstance } from "../stores/useLaunchStore";
 import { useModStore } from "../stores/useModStore";
 import { InstanceCover } from "../components/InstanceCover";
 import { ModDetailsModal } from "../components/ModDetailsModal";
@@ -15,13 +15,14 @@ export default function InstanceDetailPage() {
   const navigate = useNavigate();
   const [instance, setInstance] = useState<InstanceRecord | null>(null);
   const [tab, setTab] = useState<(typeof TABS)[number]>("Overview");
-  const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   const logs = useLaunchStore((s) => (id ? s.logsByInstance[id] ?? [] : []));
   const running = useLaunchStore((s) => (id ? s.runningInstanceIds.has(id) : false));
+  const launching = useLaunchStore((s) => (id ? s.launchingInstanceIds.has(id) : false));
+  const kill = useLaunchStore((s) => s.kill);
 
   useEffect(() => {
     if (!id) return;
@@ -35,14 +36,21 @@ export default function InstanceDetailPage() {
   async function handlePlay() {
     if (!id) return;
     setError(null);
-    setLaunching(true);
     try {
-      await window.noxara.launchInstance(id);
+      await launchInstance(id);
       setTab("Logs");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to launch");
-    } finally {
-      setLaunching(false);
+    }
+  }
+
+  async function handleKill() {
+    if (!id) return;
+    try {
+      await kill(id);
+      toast.success("Instance stopped");
+    } catch (e) {
+      toast.error("Couldn't stop instance", e instanceof Error ? e.message : undefined);
     }
   }
 
@@ -59,40 +67,103 @@ export default function InstanceDetailPage() {
   }
 
   if (!instance) {
-    return <div className="p-8 text-sm text-noxara-muted">Loading…</div>;
+    return (
+      <div className="p-4 md:p-6 max-w-5xl mx-auto">
+        <div className="yz-card p-5 flex items-center gap-4 mb-6">
+          <div className="yz-skeleton w-24 h-24 rounded-xl shrink-0" />
+          <div className="flex-1 space-y-2.5">
+            <div className="yz-skeleton h-6 w-48 rounded" />
+            <div className="yz-skeleton h-4 w-64 rounded" />
+            <div className="yz-skeleton h-3 w-44 rounded" />
+          </div>
+        </div>
+        <div className="flex gap-1 border-b border-noxara-border mb-4 pb-0.5">
+          <div className="yz-skeleton h-8 w-20 rounded" />
+          <div className="yz-skeleton h-8 w-16 rounded" />
+          <div className="yz-skeleton h-8 w-16 rounded" />
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="yz-skeleton h-20 rounded-md" />
+          <div className="yz-skeleton h-20 rounded-md" />
+          <div className="yz-skeleton h-20 rounded-md" />
+          <div className="yz-skeleton h-20 rounded-md" />
+        </div>
+      </div>
+    );
   }
 
   return (
-    <div className="p-6 md:p-10 max-w-5xl mx-auto">
-      <div className="relative rounded-md overflow-hidden border border-noxara-border mb-6 h-48 md:h-56">
-        <InstanceCover name={instance.name} className="absolute inset-0 rounded-none border-0" />
-        <div className="absolute inset-0 bg-gradient-to-t from-black via-black/50 to-transparent" />
-        <div className="relative h-full flex items-end justify-between p-5 md:p-6">
-          <div>
-            <h1 className="text-xl md:text-2xl font-semibold text-noxara-white">{instance.name}</h1>
-            <p className="text-sm text-noxara-subtle mt-1">
-              Minecraft {instance.minecraftVersion} · {instance.loader === "vanilla" ? "Vanilla" : instance.loader}
-            </p>
+    <div className="p-4 md:p-6 max-w-5xl mx-auto">
+      <div className="yz-card p-5 flex flex-col sm:flex-row sm:items-center gap-4 mb-6">
+        <InstanceCover
+          loader={instance.loader}
+          className="w-24 h-24 shrink-0 rounded-xl"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl md:text-2xl font-semibold text-noxara-white truncate">
+              {instance.name}
+            </h1>
+            {running && (
+              <span className="flex items-center gap-1.5 text-[10px] font-medium bg-noxara-success/10 text-noxara-success px-2 py-0.5 rounded-full">
+                <span className="w-1.5 h-1.5 rounded-full bg-noxara-success animate-pulse" />
+                RUNNING
+              </span>
+            )}
+            {launching && (
+              <span className="flex items-center gap-1.5 text-[10px] font-medium bg-noxara-elevated text-noxara-text px-2 py-0.5 rounded-full">
+                <Loader2 size={10} className="animate-spin" />
+                LAUNCHING
+              </span>
+            )}
           </div>
-          <div className="flex gap-2">
-            <button onClick={handlePlay} disabled={launching || running} className="yz-btn-primary">
-              <Play size={16} />
-              {running ? "Running" : launching ? "Launching…" : "Play"}
+          <p className="text-sm text-noxara-subtle mt-0.5">
+            Minecraft {instance.minecraftVersion} ·{" "}
+            {instance.loader === "vanilla" ? "Vanilla" : instance.loader}
+          </p>
+          <p className="text-xs text-noxara-muted mt-2">
+            {instance.lastPlayedAt
+              ? `Last played ${new Date(instance.lastPlayedAt).toLocaleString()}`
+              : "Never played"}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          {running ? (
+            <button onClick={handleKill} className="yz-btn-danger px-5">
+              <X size={16} /> Kill Instance
             </button>
-            <button onClick={handleDuplicate} className="yz-btn-secondary bg-black/30 backdrop-blur-sm" title="Duplicate">
-              <Copy size={16} />
+          ) : (
+            <button onClick={handlePlay} disabled={launching} className="yz-btn-primary px-5">
+              {launching ? (
+                <>
+                  <Loader2 size={16} className="animate-spin" /> Launching…
+                </>
+              ) : (
+                <>
+                  <Play size={16} /> Play
+                </>
+              )}
             </button>
-            <button
-              onClick={() => id && window.noxara.openInstanceFolder(id)}
-              className="yz-btn-secondary bg-black/30 backdrop-blur-sm"
-              title="Open Folder"
-            >
-              <FolderOpen size={16} />
-            </button>
-            <button onClick={() => setConfirmDelete(true)} className="yz-btn-danger bg-black/30 backdrop-blur-sm" title="Delete">
-              <Trash2 size={16} />
-            </button>
-          </div>
+          )}
+          <button onClick={handleDuplicate} className="yz-btn-secondary" title="Duplicate" aria-label="Duplicate">
+            <Copy size={16} />
+          </button>
+          <button
+            onClick={() => id && window.noxara.openInstanceFolder(id)}
+            className="yz-btn-secondary"
+            title="Open Folder"
+            aria-label="Open Folder"
+          >
+            <FolderOpen size={16} />
+          </button>
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="yz-btn-danger"
+            title="Delete"
+            aria-label="Delete"
+          >
+            <Trash2 size={16} />
+          </button>
         </div>
       </div>
 

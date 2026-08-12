@@ -4,11 +4,12 @@ mod forge;
 mod java;
 mod launch;
 mod maven;
+mod modpack;
 mod mojang;
 mod natives;
 mod protocol;
 
-use protocol::{write_response, RpcRequest, RpcResponse};
+use protocol::{write_event, write_response, RpcRequest, RpcResponse};
 use serde_json::json;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -235,7 +236,17 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
                 });
             }
 
-            let failed = downloads::download_batch(http, &task_id, tasks, 8).await?;
+            let failed = downloads::download_batch(
+                http,
+                &task_id,
+                tasks,
+                req.params
+                    .get("maxConcurrency")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as usize)
+                    .unwrap_or(8),
+            )
+            .await?;
             Ok(json!({ "failed": failed }))
         }
 
@@ -289,9 +300,50 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
             tokio::spawn(async move {
                 if let Err(e) = launch::launch_and_stream(&instance, args, &token).await {
                     tracing::error!("launch failed: {e:#}");
+                    // A spawn failure emits no streamed output and never reaches the
+                    // exit path, so surface it as an early game.exit so the launcher UI
+                    // clears its "launching" state instead of hanging on it forever.
+                    write_event(
+                        "game.exit",
+                        launch::GameExitEvent {
+                            instance_id: instance.instance_id.clone(),
+                            code: None,
+                            crashed: true,
+                        },
+                    );
                 }
             });
             Ok(json!({ "started": true }))
+        }
+
+        "launch.running" => {
+            let running = launch::running_instances();
+            Ok(json!({ "running": running }))
+        }
+
+        "launch.stop" => {
+            let instance_id = req
+                .params
+                .get("instanceId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing instanceId"))?;
+            let stopped = launch::stop_instance(instance_id).await;
+            Ok(json!({ "stopped": stopped }))
+        }
+
+        "modpack.extract" => {
+            let zip_path = req
+                .params
+                .get("zipPath")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing zipPath"))?;
+            let dest_dir = req
+                .params
+                .get("destDir")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing destDir"))?;
+            let entries = modpack::extract(zip_path, dest_dir).await?;
+            Ok(json!({ "entries": entries }))
         }
 
         "natives.extract" => {

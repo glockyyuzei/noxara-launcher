@@ -9,6 +9,8 @@ import { randomUUID } from "node:crypto";
 import { coreBridge } from "./core-bridge";
 import { getDb } from "./database";
 import { getActiveAccount, resolveMinecraftSession } from "./accounts";
+import { carrySkinIntoInstance } from "./skins";
+import { getSettings } from "./settings";
 import { detectJava } from "./java";
 import { librariesDir, assetsDir, versionsDir } from "../filesystem/paths";
 import { getFabricVersionDetail } from "./fabric";
@@ -133,7 +135,7 @@ async function ensureVersionAssetsAndLibraries(
   const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
   const failed = await coreBridge.call<{ failed: string[] }>(
     "downloads.batch",
-    { taskId, tasks },
+    { taskId, tasks, maxConcurrency: getSettings().maxConcurrentDownloads },
     DOWNLOAD_TIMEOUT_MS
   );
   if (failed.failed.length > 0) {
@@ -168,6 +170,11 @@ async function ensureVersionAssetsAndLibraries(
 async function resolveJavaPath(instanceJavaPath: string | null, recommendedMajor: number): Promise<string> {
   if (instanceJavaPath && fs.existsSync(instanceJavaPath)) return instanceJavaPath;
 
+  const settings = getSettings();
+  if (!settings.autoDetectJava && settings.defaultJavaPath && fs.existsSync(settings.defaultJavaPath)) {
+    return settings.defaultJavaPath;
+  }
+
   const installs = await detectJava();
   const exact = installs.find((j) => j.majorVersion === recommendedMajor);
   if (exact) return exact.path;
@@ -187,7 +194,7 @@ async function resolveAccountForLaunch() {
   return resolveMinecraftSession(account.id);
 }
 
-export async function launchInstance(instanceId: string): Promise<{ started: boolean }> {
+export async function launchInstance(instanceId: string, extraGameArgs?: string[]): Promise<{ started: boolean }> {
   const db = getDb();
   const instance = db.prepare("SELECT * FROM instances WHERE id = ?").get(instanceId) as
     | {
@@ -252,6 +259,22 @@ export async function launchInstance(instanceId: string): Promise<{ started: boo
 
   db.prepare("UPDATE instances SET last_played_at = ? WHERE id = ?").run(new Date().toISOString(), instanceId);
 
+  // Offline accounts with a selected skin carry that PNG into the game directory on
+  // every launch so the skin actually accompanies the profile the game uses — the
+  // file is verified byte-for-byte after the copy and persists in the instance until
+  // the next launch overwrites it. Best-effort: a skin problem must never block the
+  // game from starting, so a failure here is logged, not thrown.
+  const activeAccount = getActiveAccount();
+  if (activeAccount?.kind === "offline") {
+    const carried = carrySkinIntoInstance(activeAccount.id, instance.instance_dir);
+    if (carried.ok) {
+      console.log(`[launch] carried offline skin into ${carried.pngPath}`);
+    } else if (carried.reason) {
+      console.log(`[launch] offline skin not carried: ${carried.reason}`);
+    }
+  }
+
+  const settings = getSettings();
   return coreBridge.call<{ started: boolean }>("launch.start", {
     instance: {
       instance_id: instance.id,
@@ -264,9 +287,12 @@ export async function launchInstance(instanceId: string): Promise<{ started: boo
       min_ram_mb: instance.min_ram_mb,
       max_ram_mb: instance.max_ram_mb,
       extra_jvm_args: instance.jvm_args ? instance.jvm_args.split(/\s+/).filter(Boolean) : [],
-      extra_game_args: instance.game_args ? instance.game_args.split(/\s+/).filter(Boolean) : [],
-      width: 854,
-      height: 480,
+      extra_game_args: [
+        ...(instance.game_args ? instance.game_args.split(/\s+/).filter(Boolean) : []),
+        ...(extraGameArgs ?? []),
+      ],
+      width: settings.launchWidth,
+      height: settings.launchHeight,
     },
     account: {
       username: account.username,
@@ -276,4 +302,15 @@ export async function launchInstance(instanceId: string): Promise<{ started: boo
     },
     versionDetail,
   });
+}
+
+/** The set of instance ids whose Minecraft process is still alive on the Rust side. */
+export async function listRunningInstances(): Promise<string[]> {
+  const result = await coreBridge.call<{ running: string[] }>("launch.running");
+  return result.running ?? [];
+}
+
+/** Terminates the tracked Minecraft process for an instance, if one is running. */
+export async function killInstance(instanceId: string): Promise<void> {
+  await coreBridge.call("launch.stop", { instanceId });
 }

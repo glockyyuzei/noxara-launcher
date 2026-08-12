@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2, Check } from "lucide-react";
+import { Plus, Trash2, Check, Users } from "lucide-react";
 import { useAccountStore } from "../stores/useAccountStore";
 import { AccountAvatar } from "../components/AccountAvatar";
 import { MicrosoftLoginModal } from "../components/MicrosoftLoginModal";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
 import { toast } from "../stores/useToastStore";
 import type { AccountRecord } from "@shared/types/ipc";
 
@@ -62,16 +64,16 @@ export default function AccountsPage() {
   }
 
   return (
-    <div className="p-6 md:p-10 max-w-2xl mx-auto">
-      <div className="flex items-center justify-between mb-6 md:mb-8">
-        <div>
-          <h1 className="text-xl md:text-2xl font-semibold text-noxara-white">Accounts</h1>
-          <p className="text-sm text-noxara-muted mt-1">Manage who you play as.</p>
-        </div>
-        <button onClick={() => setShowAdd(true)} className="yz-btn-primary">
-          <Plus size={16} /> Add Account
-        </button>
-      </div>
+    <div className="p-4 md:p-6 max-w-3xl mx-auto">
+      <PageHeader
+        title="Accounts"
+        subtitle="Manage who you play as."
+        actions={
+          <button onClick={() => setShowAdd(true)} className="yz-btn-primary">
+            <Plus size={16} /> Add Account
+          </button>
+        }
+      />
 
       {loading && !hasLoaded ? (
         <div className="space-y-2">
@@ -79,12 +81,16 @@ export default function AccountsPage() {
           <div className="yz-skeleton h-16 rounded-md" />
         </div>
       ) : accounts.length === 0 ? (
-        <div className="yz-card p-10 text-center">
-          <p className="text-sm text-noxara-subtle mb-4">No accounts yet.</p>
-          <button onClick={() => setShowAdd(true)} className="yz-btn-primary inline-flex">
-            <Plus size={16} /> Add Account
-          </button>
-        </div>
+        <EmptyState
+          icon={Users}
+          title="No accounts yet"
+          description="Add an account to start playing Minecraft."
+          action={
+            <button onClick={() => setShowAdd(true)} className="yz-btn-primary">
+              <Plus size={16} /> Add Account
+            </button>
+          }
+        />
       ) : (
         <div className="space-y-2">
           {accounts.map((a) => (

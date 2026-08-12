@@ -23,7 +23,7 @@ export function ModCard({
 }) {
   const [imgFailed, setImgFailed] = useState(false);
   return (
-    <div className="yz-card p-4 flex gap-3.5 hover:border-noxara-border-strong hover:-translate-y-0.5 transition-all duration-200">
+    <div className="yz-card p-4 flex gap-3.5 hover:border-noxara-border-strong hover:-translate-y-0.5 hover:shadow-card-hover transition-all duration-200">
       <button
         onClick={onOpen}
         className="shrink-0 w-14 h-14 rounded-md bg-noxara-elevated border border-noxara-border overflow-hidden yz-focus-ring"

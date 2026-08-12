@@ -29,7 +29,7 @@ interface ModRow {
   instance_id: string;
   name: string;
   version: string;
-  source: "modrinth" | "local";
+  source: "modrinth" | "modpack" | "local";
   source_id: string | null;
   filename: string;
   enabled: number;

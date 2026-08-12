@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Check } from "lucide-react";
 import type { CreateInstanceInput, InstanceRecord, VersionManifestEntry, ForgeVersion } from "@shared/types/ipc";
 
 const LOADERS: CreateInstanceInput["loader"][] = ["vanilla", "fabric", "forge"];
@@ -29,6 +30,16 @@ export function CreateInstanceWizard({
     window.noxara.getVersionManifest().then((manifest) => {
       setVersions(manifest.versions);
       setMinecraftVersion((v) => v ?? manifest.latest.release);
+    });
+  }, []);
+
+  // Honor the user's launcher defaults (Settings → Game/Java/Memory): new instances
+  // start at the configured RAM and snapshot visibility instead of hardcoded values.
+  useEffect(() => {
+    window.noxara.getSettings().then((s) => {
+      setMinRam(s.defaultMinRamMb);
+      setMaxRam(Math.max(s.defaultMaxRamMb, s.defaultMinRamMb));
+      setShowSnapshots(s.showSnapshots);
     });
   }, []);
 
@@ -151,11 +162,14 @@ export function CreateInstanceWizard({
                   <button
                     key={l}
                     onClick={() => setLoader(l)}
-                    className={`yz-card px-3 py-2.5 text-sm capitalize transition-colors relative ${
-                      loader === l ? "border-noxara-white text-noxara-white" : "text-noxara-subtle hover:border-noxara-border-strong"
+                    className={`yz-card px-3 py-3 text-sm capitalize transition-all duration-150 flex items-center justify-center gap-1.5 ${
+                      loader === l
+                        ? "border-noxara-white text-noxara-white"
+                        : "text-noxara-subtle hover:border-noxara-border-strong"
                     }`}
                   >
                     {l}
+                    {loader === l && <Check size={13} strokeWidth={2.5} />}
                   </button>
                 ))}
               </div>
@@ -213,9 +227,12 @@ export function CreateInstanceWizard({
           )}
 
           {step === 4 && (
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div>
-                <label className="yz-label block mb-2">Minimum RAM: {minRam} MB</label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="yz-label">Minimum RAM</label>
+                  <span className="text-sm font-medium text-noxara-text tabular-nums">{minRam} MB</span>
+                </div>
                 <input
                   type="range"
                   min={512}
@@ -223,11 +240,14 @@ export function CreateInstanceWizard({
                   step={256}
                   value={minRam}
                   onChange={(e) => setMinRam(Number(e.target.value))}
-                  className="w-full"
+                  className="yz-range"
                 />
               </div>
               <div>
-                <label className="yz-label block mb-2">Maximum RAM: {maxRam} MB</label>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="yz-label">Maximum RAM</label>
+                  <span className="text-sm font-medium text-noxara-text tabular-nums">{maxRam} MB</span>
+                </div>
                 <input
                   type="range"
                   min={minRam}
@@ -235,7 +255,7 @@ export function CreateInstanceWizard({
                   step={256}
                   value={maxRam}
                   onChange={(e) => setMaxRam(Number(e.target.value))}
-                  className="w-full"
+                  className="yz-range"
                 />
               </div>
               {maxRam > 16384 && (

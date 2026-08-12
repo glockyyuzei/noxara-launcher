@@ -1,5 +1,7 @@
-import { CheckCircle2, AlertTriangle, Loader2, Hammer } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Loader2, Hammer, Download } from "lucide-react";
 import { useDownloadStore } from "../stores/useDownloadStore";
+import { EmptyState } from "../components/EmptyState";
+import { PageHeader } from "../components/PageHeader";
 
 function formatBytes(n: number): string {
   if (n <= 0) return "0 MB";
@@ -20,21 +22,25 @@ export default function DownloadsPage() {
   const isEmpty = downloads.length === 0 && forgeInstalls.length === 0;
 
   return (
-    <div className="p-6 md:p-10 max-w-3xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl md:text-2xl font-semibold text-noxara-white">Downloads</h1>
-          <p className="text-sm text-noxara-muted mt-1">Mods, Forge installs, and other launcher downloads.</p>
-        </div>
-        {(finished.length > 0 || finishedForge.length > 0) && (
-          <button onClick={clearCompleted} className="yz-btn-ghost text-xs">
-            Clear finished
-          </button>
-        )}
-      </div>
+    <div className="p-4 md:p-6 max-w-3xl mx-auto">
+      <PageHeader
+        title="Downloads"
+        subtitle="Mods, Forge installs, and other launcher downloads."
+        actions={
+          (finished.length > 0 || finishedForge.length > 0) && (
+            <button onClick={clearCompleted} className="yz-btn-ghost text-xs">
+              Clear finished
+            </button>
+          )
+        }
+      />
 
       {isEmpty ? (
-        <div className="yz-card p-10 text-center text-sm text-noxara-muted">No active downloads.</div>
+        <EmptyState
+          icon={Download}
+          title="No downloads"
+          description="Mod downloads and Forge installs will show up here."
+        />
       ) : (
         <div className="space-y-2">
           {activeForge.map((f) => (
@@ -54,7 +60,7 @@ export default function DownloadsPage() {
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2 text-sm text-noxara-text">
                     <Loader2 size={14} className="animate-spin text-noxara-subtle" />
-                    {d.modName}
+                    {d.name}
                   </div>
                   <span className="text-xs text-noxara-muted">
                     {formatBytes(d.bytesDownloaded)}
@@ -92,7 +98,7 @@ export default function DownloadsPage() {
                   <AlertTriangle size={15} className="text-noxara-error" />
                 )}
                 <div>
-                  <div className="text-noxara-text">{d.modName}</div>
+                  <div className="text-noxara-text">{d.name}</div>
                   {d.error && <div className="text-xs text-noxara-error mt-0.5">{d.error}</div>}
                 </div>
               </div>
