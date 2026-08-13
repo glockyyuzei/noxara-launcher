@@ -134,7 +134,7 @@ pub async fn get_loader_versions(client: &reqwest::Client, game_version: &str) -
         async move {
             let resp = client
                 .get(&url)
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(10)) // budgeted with MAX_ATTEMPTS to fit the bridge timeout
                 .send()
                 .await
                 .context("failed to reach Quilt meta API")?
@@ -189,7 +189,7 @@ pub async fn build_quilt_version_detail(
         async move {
             let resp = client
                 .get(&url)
-                .timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(10)) // budgeted with MAX_ATTEMPTS to fit the bridge timeout
                 .send()
                 .await
                 .context("failed to reach Quilt meta API for profile json")?

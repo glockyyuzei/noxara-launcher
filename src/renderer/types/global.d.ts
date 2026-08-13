@@ -1,6 +1,9 @@
 import type {
   CreateInstanceInput,
+  UpdateInstanceInput,
   InstanceRecord,
+  BackupRecord,
+  StorageBreakdown,
   AccountRecord,
   JavaInstallation,
   VersionManifest,
@@ -16,6 +19,7 @@ import type {
   GameStartedPayload,
   ModSearchQuery,
   ModrinthSearchResult,
+  ModrinthCategory,
   ModrinthVersion,
   ModLoader,
   InstalledMod,
@@ -54,9 +58,16 @@ declare global {
       ensureJavaRuntime(majorVersion: number): Promise<JavaInstallation>;
       listInstances(): Promise<InstanceRecord[]>;
       createInstance(input: CreateInstanceInput): Promise<InstanceRecord>;
+      updateInstance(id: string, patch: UpdateInstanceInput): Promise<InstanceRecord>;
       deleteInstance(id: string): Promise<void>;
       duplicateInstance(id: string, newName: string): Promise<InstanceRecord>;
       openInstanceFolder(id: string): Promise<void>;
+      listBackups(instanceId: string): Promise<BackupRecord[]>;
+      createBackup(instanceId: string, label: string): Promise<BackupRecord>;
+      restoreBackup(backupId: string): Promise<void>;
+      deleteBackup(backupId: string): Promise<void>;
+      getStorageBreakdown(): Promise<StorageBreakdown>;
+      clearStorageCache(categoryId: string): Promise<StorageBreakdown>;
       listAccounts(): Promise<AccountRecord[]>;
       createOfflineProfile(username: string): Promise<AccountRecord>;
       setActiveAccount(id: string): Promise<void>;
@@ -73,6 +84,7 @@ declare global {
       getFabricLoaderVersions(mcVersion: string, forceRefresh?: boolean): Promise<FabricLoaderVersion[]>;
       getQuiltLoaderVersions(mcVersion: string, forceRefresh?: boolean): Promise<QuiltLoaderVersion[]>;
       searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult>;
+      getModCategories(): Promise<ModrinthCategory[]>;
       getModVersions(projectId: string, loader?: ModLoader, gameVersion?: string): Promise<ModrinthVersion[]>;
       installMod(instanceId: string, projectId: string, versionId: string): Promise<InstalledMod>;
       listInstalledMods(instanceId: string): Promise<InstalledMod[]>;
@@ -84,6 +96,7 @@ declare global {
       removeContent(instanceId: string, itemId: string, category: ContentCategory): Promise<void>;
       setContentEnabled(instanceId: string, itemId: string, category: ContentCategory, enabled: boolean): Promise<void>;
       checkModpackUpdates(instanceId: string): Promise<ModpackUpdateInfo[]>;
+      checkContentUpdates(instanceId: string, category: ContentCategory): Promise<ModpackUpdateInfo[]>;
       pickModpackFile(): Promise<string | null>;
       importModpackFromFile(mrpackPath: string, input: ModpackImportInput): Promise<InstanceRecord>;
       pickModpackSavePath(defaultFileName: string): Promise<string | null>;
@@ -107,6 +120,7 @@ declare global {
       setSettings(partial: Partial<LauncherSettings>): Promise<LauncherSettings>;
       pickFolder(title: string): Promise<string | null>;
       pickJavaExecutable(): Promise<string | null>;
+      openDataDirectory(): Promise<void>;
       listSkins(): Promise<SkinRecord[]>;
       uploadSkin(name: string, base64Png: string, model: "classic" | "slim"): Promise<SkinRecord>;
       deleteSkin(id: string): Promise<void>;

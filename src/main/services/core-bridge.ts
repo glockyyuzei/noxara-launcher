@@ -161,7 +161,13 @@ export class CoreBridge extends EventEmitter {
         // instead of leaking. The promise has already rejected — callers retry on
         // `code === "timeout"`.
         pending.settled = true;
-        reject(coreError("timeout", `noxara-core call "${method}" timed out after ${timeoutMs}ms`));
+        reject(
+          coreError(
+            "timeout",
+            `The "${method}" request did not respond in time (after ${timeoutMs / 1000}s). ` +
+              `It may still be completing in the background — retry the action.`
+          )
+        );
       }, timeoutMs);
 
       this.pending.set(id, pending);

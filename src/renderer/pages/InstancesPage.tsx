@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Play, Boxes, Loader2, X } from "lucide-react";
+import { Plus, Boxes, X } from "lucide-react";
 import type { InstanceRecord } from "@shared/types/ipc";
 import { CreateInstanceWizard } from "../components/CreateInstanceWizard";
 import { InstanceCover } from "../components/InstanceCover";
+import { InstanceStateBadge } from "../components/InstanceStateBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
-import { launchInstance, useLaunchStore } from "../stores/useLaunchStore";
+import { launchInstance } from "../stores/useLaunchStore";
+import { friendlyErrorMessage } from "../lib/coreErrors";
 import { toast } from "../stores/useToastStore";
 
 export default function InstancesPage() {
@@ -14,9 +16,6 @@ export default function InstancesPage() {
   const [showWizard, setShowWizard] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const runningIds = useLaunchStore((s) => s.runningInstanceIds);
-  const launchingIds = useLaunchStore((s) => s.launchingInstanceIds);
-  const kill = useLaunchStore((s) => s.kill);
 
   function refresh() {
     setLoading(true);
@@ -33,18 +32,9 @@ export default function InstancesPage() {
     try {
       await launchInstance(id);
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to launch";
+      const message = friendlyErrorMessage(e);
       setError(message);
       toast.error("Could not launch Minecraft", message);
-    }
-  }
-
-  async function handleKill(id: string) {
-    try {
-      await kill(id);
-      toast.success("Instance stopped");
-    } catch (e) {
-      toast.error("Couldn't stop instance", e instanceof Error ? e.message : undefined);
     }
   }
 
@@ -91,16 +81,9 @@ export default function InstancesPage() {
             >
               <div className="relative">
                 <InstanceCover loader={i.loader} className="w-full aspect-video rounded-none border-0" compact />
-                {runningIds.has(i.id) && (
-                  <span className="absolute top-1.5 right-1.5 flex items-center gap-1 text-[9px] font-medium bg-black/70 backdrop-blur-sm text-noxara-success px-1.5 py-0.5 rounded">
-                    <Play size={8} fill="currentColor" /> RUNNING
-                  </span>
-                )}
-                {launchingIds.has(i.id) && (
-                  <span className="absolute top-1.5 right-1.5 flex items-center gap-1 text-[9px] font-medium bg-black/70 backdrop-blur-sm text-noxara-white px-1.5 py-0.5 rounded">
-                    <Loader2 size={8} className="animate-spin" /> LAUNCHING
-                  </span>
-                )}
+                <span className="absolute top-1.5 right-1.5">
+                  <InstanceStateBadge instanceId={i.id} />
+                </span>
                 {i.favorite && (
                   <span className="absolute top-1.5 left-1.5 text-[9px] font-medium bg-black/70 backdrop-blur-sm text-noxara-white px-1.5 py-0.5 rounded">
                     ★

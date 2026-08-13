@@ -1,12 +1,15 @@
-import { useEffect, lazy, Suspense } from "react";
+import { useEffect, lazy, Suspense, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import { TitleBar } from "./layouts/TitleBar";
 import { Sidebar } from "./layouts/Sidebar";
 import { ToastContainer } from "./components/ToastContainer";
 import { ActivityOverlay } from "./components/ActivityOverlay";
+import { CommandPalette } from "./components/CommandPalette";
 import { useLaunchStore } from "./stores/useLaunchStore";
 import { useAccountStore } from "./stores/useAccountStore";
 import { useActivityStore } from "./stores/useActivityStore";
+import { analyzeCrash } from "./lib/crashAnalysis";
+import { applyAppearance } from "./lib/appearance";
 import { toast } from "./stores/useToastStore";
 import HomePage from "./pages/HomePage";
 import InstancesPage from "./pages/InstancesPage";
@@ -20,14 +23,17 @@ import ShadersPage from "./pages/ShadersPage";
 import ServersPage from "./pages/ServersPage";
 import DownloadsPage from "./pages/DownloadsPage";
 import SettingsPage from "./pages/SettingsPage";
+import StoragePage from "./pages/StoragePage";
 
 // The 3D skin viewer pulls in three.js (~600 kB), so SkinsPage is loaded on demand to
 // keep it out of the initial bundle.
 const SkinsPage = lazy(() => import("./pages/SkinsPage"));
 
 export default function App() {
+  const [paletteOpen, setPaletteOpen] = useState(false);
   const appendLog = useLaunchStore((s) => s.appendLog);
   const markRunning = useLaunchStore((s) => s.markRunning);
+  const markCrashed = useLaunchStore((s) => s.markCrashed);
   const refreshRunning = useLaunchStore((s) => s.refreshRunning);
   const refreshAccounts = useAccountStore((s) => s.refresh);
   const hydrateActivities = useActivityStore((s) => s.hydrate);
@@ -40,6 +46,15 @@ export default function App() {
     refreshAccounts();
   }, [refreshAccounts]);
 
+  // Apply appearance settings (UI scale / compact mode / animations) on startup and
+  // again whenever Settings saves (via a custom event from the settings page).
+  useEffect(() => {
+    const apply = () => window.noxara.getSettings().then(applyAppearance).catch(() => undefined);
+    apply();
+    window.addEventListener("noxara:settings-applied", apply);
+    return () => window.removeEventListener("noxara:settings-applied", apply);
+  }, []);
+
   useEffect(() => {
     const offStarted = window.noxara.onGameStarted((p) => markRunning(p.instanceId, true));
     const offOutput = window.noxara.onGameOutput((p) => {
@@ -49,7 +64,14 @@ export default function App() {
     const offExit = window.noxara.onGameExit((p) => {
       markRunning(p.instanceId, false);
       if (p.crashed) {
-        toast.error("Minecraft crashed", p.code !== null ? `Exit code ${p.code}` : undefined);
+        // Diagnose from the real log tail + exit code, then let the UI surface the
+        // CrashInfo (banner with VIEW LOG / COPY ERROR / RESTART / REPAIR) wherever
+        // the instance is shown. Clear is handled by launchInstance() on retry.
+        // Read logs imperatively so this subscription never re-binds on new output.
+        const tail = useLaunchStore.getState().logsByInstance[p.instanceId] ?? [];
+        const info = analyzeCrash(tail, p.code);
+        markCrashed(p.instanceId, info);
+        toast.error(info.reason, p.code !== null ? `Exit code ${p.code}` : undefined);
       }
     });
 
@@ -74,11 +96,23 @@ export default function App() {
       clearInterval(pollTimer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [appendLog, markRunning, refreshRunning, applyActivityUpdate, applyActivityRemoved, hydrateActivities]);
+  }, [appendLog, markRunning, markCrashed, refreshRunning, applyActivityUpdate, applyActivityRemoved, hydrateActivities]);
+
+  // Ctrl/Cmd+K opens the global search palette anywhere in the app.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-noxara-black">
-      <TitleBar />
+      <TitleBar onOpenSearch={() => setPaletteOpen(true)} />
       <div className="flex flex-1 min-h-0">
         <Sidebar />
         <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
@@ -102,6 +136,7 @@ export default function App() {
               <Route path="/servers" element={<ServersPage />} />
               <Route path="/skins" element={<SkinsPage />} />
               <Route path="/downloads" element={<DownloadsPage />} />
+              <Route path="/storage" element={<StoragePage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Routes>
           </Suspense>
@@ -109,6 +144,7 @@ export default function App() {
       </div>
       <ActivityOverlay />
       <ToastContainer />
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
   );
 }

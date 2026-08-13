@@ -73,6 +73,21 @@ pub async fn create(zip_path: &str, index_path: &str, overrides_dir: &str) -> Re
     Ok(())
 }
 
+/// Zips every file under `source_dir` into `zip_path` with no path prefix — a
+/// faithful, restore-able snapshot of a directory (used for instance backups).
+/// Directory entries are recreated implicitly by file entries.
+pub async fn create_directory_archive(zip_path: &str, source_dir: &str) -> Result<()> {
+    let file = File::create(zip_path).context("failed to create backup archive")?;
+    let mut zip = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let root = Path::new(source_dir);
+    if root.is_dir() {
+        zip_dir(&mut zip, root, root, "", &options)?;
+    }
+    let _ = zip.finish()?;
+    Ok(())
+}
+
 /// Recursively writes every file under `dir` into the zip, path-prefixed with `rel`.
 fn zip_dir(
     zip: &mut ZipWriter<File>,
@@ -97,7 +112,9 @@ fn zip_dir(
             .to_string_lossy()
             .replace('\\', "/");
         let mut out = String::from(prefix);
-        out.push('/');
+        if !out.is_empty() {
+            out.push('/');
+        }
         out.push_str(&rel);
 
         zip.start_file(out, *options)?;

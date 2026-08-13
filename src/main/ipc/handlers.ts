@@ -1,8 +1,9 @@
 import { ipcMain, BrowserWindow, shell, dialog } from "electron";
 import fs from "node:fs";
 import { IPC_CHANNELS } from "../../shared/types/ipc";
-import type { CreateInstanceInput } from "../../shared/types/ipc";
+import type { CreateInstanceInput, UpdateInstanceInput } from "../../shared/types/ipc";
 import { coreBridge } from "../services/core-bridge";
+import { rootDir } from "../filesystem/paths";
 import * as mojangService from "../services/mojang";
 import * as javaService from "../services/java";
 import * as instancesService from "../services/instances";
@@ -20,6 +21,8 @@ import * as serversService from "../services/servers";
 import * as settingsService from "../services/settings";
 import * as modpackExportService from "../services/modpack-export";
 import * as microsoftLoginService from "../services/microsoft-login";
+import * as backupsService from "../services/backups";
+import * as storageService from "../services/storage";
 import { pingServer } from "../services/server-ping";
 import { cancelDownload, retryDownload, listDownloadTasks, downloadControlEvents } from "../services/download-control";
 import {
@@ -35,6 +38,7 @@ import {
 } from "../services/activity";
 import { checkInstanceHealth, repairInstance } from "../services/health";
 import { getModDependencies } from "../services/mods";
+import { applyStartOnBoot, applyTrayPreference } from "../app-settings";
 import type {
   ContentCategory,
   LauncherSettings,
@@ -71,9 +75,27 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   ipcMain.handle(IPC_CHANNELS.listInstances, safe(() => instancesService.listInstances()));
   ipcMain.handle(IPC_CHANNELS.createInstance, safe((_e, input: CreateInstanceInput) => instancesService.createInstance(input)));
+  ipcMain.handle(
+    IPC_CHANNELS.updateInstance,
+    safe((_e, id: string, patch: UpdateInstanceInput) => instancesService.updateInstance(id, patch))
+  );
   ipcMain.handle(IPC_CHANNELS.deleteInstance, safe((_e, id: string) => instancesService.deleteInstance(id)));
   ipcMain.handle(IPC_CHANNELS.duplicateInstance, safe((_e, id: string, name: string) => instancesService.duplicateInstance(id, name)));
   ipcMain.handle(IPC_CHANNELS.openInstanceFolder, safe((_e, id: string) => instancesService.openInstanceFolder(id)));
+
+  ipcMain.handle(IPC_CHANNELS.listBackups, safe((_e, instanceId: string) => backupsService.listBackups(instanceId)));
+  ipcMain.handle(
+    IPC_CHANNELS.createBackup,
+    safe((_e, instanceId: string, label: string) => backupsService.createBackup(instanceId, label))
+  );
+  ipcMain.handle(IPC_CHANNELS.restoreBackup, safe((_e, backupId: string) => backupsService.restoreBackup(backupId)));
+  ipcMain.handle(IPC_CHANNELS.deleteBackup, safe((_e, backupId: string) => backupsService.deleteBackup(backupId)));
+
+  ipcMain.handle(IPC_CHANNELS.getStorageBreakdown, safe(() => storageService.getStorageBreakdown()));
+  ipcMain.handle(
+    IPC_CHANNELS.clearStorageCache,
+    safe((_e, categoryId: string) => storageService.clearStorageCache(categoryId))
+  );
 
   ipcMain.handle(IPC_CHANNELS.listAccounts, safe(() => accountsService.listAccounts()));
   ipcMain.handle(IPC_CHANNELS.createOfflineProfile, safe((_e, username: string) => accountsService.createOfflineProfile(username)));
@@ -130,6 +152,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     IPC_CHANNELS.searchMods,
     safe((_e, query: ModSearchQuery) => modrinthService.searchMods(query))
   );
+  ipcMain.handle(IPC_CHANNELS.getModCategories, safe(() => modrinthService.getModCategories()));
   ipcMain.handle(
     IPC_CHANNELS.getModVersions,
     safe((_e, projectId: string, loader?: ModLoader, gameVersion?: string) =>
@@ -187,6 +210,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     IPC_CHANNELS.checkModpackUpdates,
     safe((_e, instanceId: string) => contentService.checkModpackUpdates(instanceId))
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.checkContentUpdates,
+    safe((_e, instanceId: string, category: ContentCategory) =>
+      contentService.checkContentUpdates(instanceId, category as Exclude<ContentCategory, "modpack">)
+    )
   );
 
   // Modpack import/export (.mrpack)
@@ -285,7 +314,13 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(IPC_CHANNELS.getSettings, safe(() => settingsService.getSettings()));
   ipcMain.handle(
     IPC_CHANNELS.setSettings,
-    safe((_e, partial: Partial<LauncherSettings>) => settingsService.setSettings(partial))
+    safe((_e, partial: Partial<LauncherSettings>) => {
+      const updated = settingsService.setSettings(partial);
+      // Re-apply app-level effects the moment a preference changes (no restart needed).
+      applyStartOnBoot();
+      applyTrayPreference(getWindow);
+      return updated;
+    })
   );
   ipcMain.handle(
     IPC_CHANNELS.pickFolder,
@@ -310,6 +345,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       return result.canceled ? null : (result.filePaths[0] ?? null);
     })
   );
+  ipcMain.handle(IPC_CHANNELS.openDataDirectory, safe(() => shell.openPath(rootDir())));
 
   ipcMain.handle(IPC_CHANNELS.listSkins, safe(() => skinsService.listSkins()));
   ipcMain.handle(
@@ -342,7 +378,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     safe((_e, accountId: string) => skinsService.getAccountSkinTexture(accountId))
   );
 
-  ipcMain.on(IPC_CHANNELS.windowMinimize, () => getWindow()?.minimize());
+  ipcMain.on(IPC_CHANNELS.windowMinimize, () => {
+    const win = getWindow();
+    if (!win) return;
+    // Settings → General → Minimize to tray: hide instead of minimizing.
+    if (settingsService.getSettings().minimizeToTray) {
+      win.hide();
+    } else {
+      win.minimize();
+    }
+  });
   ipcMain.on(IPC_CHANNELS.windowMaximize, () => {
     const win = getWindow();
     if (!win) return;

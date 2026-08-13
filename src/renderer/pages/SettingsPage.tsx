@@ -1,8 +1,21 @@
 import { useEffect, useState } from "react";
-import { Save, FolderOpen, Coffee, RefreshCw, RotateCcw } from "lucide-react";
+import { Link } from "react-router-dom";
+import {
+  Save,
+  FolderOpen,
+  Coffee,
+  RefreshCw,
+  RotateCcw,
+  Rocket,
+  Palette,
+  Wrench,
+  UserRound,
+  ArrowRight,
+} from "lucide-react";
 import type { LauncherSettings } from "@shared/types/ipc";
 import { PageHeader } from "../components/PageHeader";
 import { Separator } from "../components/ui/separator";
+import { notifySettingsApplied } from "../lib/appearance";
 import { toast } from "../stores/useToastStore";
 
 function Toggle({
@@ -94,6 +107,7 @@ export default function SettingsPage() {
       const saved = await window.noxara.setSettings(draft);
       setSettings(saved);
       setDraft(saved);
+      notifySettingsApplied();
       toast.success("Settings saved", "Changes will apply to new instances and future launches.");
     } catch (e) {
       toast.error("Couldn't save settings", e instanceof Error ? e.message : undefined);
@@ -116,9 +130,19 @@ export default function SettingsPage() {
       startMinimized: false,
       showSnapshots: false,
       maxConcurrentDownloads: 8,
+      startOnBoot: false,
+      minimizeToTray: false,
+      confirmBeforeCloseRunningInstances: true,
+      uiScale: 1,
+      compactMode: false,
+      uiAnimations: true,
+      downloadRetryCount: 3,
+      downloadTimeoutSec: 120,
+      debugMode: false,
     });
     setSettings(saved);
     setDraft(saved);
+    notifySettingsApplied();
     toast.success("Settings reset to defaults");
   }
 
@@ -140,6 +164,79 @@ export default function SettingsPage() {
       />
 
       <div className="yz-card px-5 py-2">
+        <div className="flex items-center gap-2 py-3">
+          <Rocket size={15} className="text-noxara-subtle" />
+          <h2 className="text-sm font-semibold text-noxara-text">General</h2>
+        </div>
+        <Row
+          title="Start Noxara when Windows starts"
+          description="Launch the launcher automatically when you sign in."
+        >
+          <Toggle checked={draft.startOnBoot} onChange={(v) => set("startOnBoot", v)} label="Start on boot" />
+        </Row>
+        <Separator />
+        <Row
+          title="Minimize to tray"
+          description="Hide to the system tray when you minimize the launcher window instead of minimizing to the taskbar."
+        >
+          <Toggle checked={draft.minimizeToTray} onChange={(v) => set("minimizeToTray", v)} label="Minimize to tray" />
+        </Row>
+        <Separator />
+        <Row
+          title="Confirm before closing with instances running"
+          description="Ask for confirmation when you close the launcher while Minecraft processes are still running."
+        >
+          <Toggle
+            checked={draft.confirmBeforeCloseRunningInstances}
+            onChange={(v) => set("confirmBeforeCloseRunningInstances", v)}
+            label="Confirm before closing with instances running"
+          />
+        </Row>
+      </div>
+
+      <div className="yz-card px-5 py-2 mt-4">
+        <div className="flex items-center gap-2 py-3">
+          <Palette size={15} className="text-noxara-subtle" />
+          <h2 className="text-sm font-semibold text-noxara-text">Appearance</h2>
+        </div>
+        <Row
+          title="UI scale"
+          description="Scales the whole interface. Applies immediately after saving."
+        >
+          <div className="flex items-center gap-3 w-64 max-w-[50vw]">
+            <span className="text-xs text-noxara-muted shrink-0">70%</span>
+            <input
+              type="range"
+              min={0.7}
+              max={1.5}
+              step={0.05}
+              value={draft.uiScale}
+              onChange={(e) => set("uiScale", Number(e.target.value))}
+              className="yz-range flex-1"
+              aria-label="UI scale"
+            />
+            <span className="text-xs text-noxara-muted shrink-0 tabular-nums">
+              {Math.round(draft.uiScale * 100)}%
+            </span>
+          </div>
+        </Row>
+        <Separator />
+        <Row
+          title="Compact mode"
+          description="Tighter padding so more instances and content fit on screen."
+        >
+          <Toggle checked={draft.compactMode} onChange={(v) => set("compactMode", v)} label="Compact mode" />
+        </Row>
+        <Separator />
+        <Row
+          title="UI animations"
+          description="Animated transitions and loading indicators throughout the launcher."
+        >
+          <Toggle checked={draft.uiAnimations} onChange={(v) => set("uiAnimations", v)} label="UI animations" />
+        </Row>
+      </div>
+
+      <div className="yz-card px-5 py-2 mt-4">
         <div className="flex items-center gap-2 py-3">
           <FolderOpen size={15} className="text-noxara-subtle" />
           <h2 className="text-sm font-semibold text-noxara-text">Game Directory</h2>
@@ -306,6 +403,75 @@ export default function SettingsPage() {
             className="yz-input w-20 text-xs"
             aria-label="Concurrent downloads"
           />
+        </Row>
+        <Separator />
+        <Row
+          title="Download retries"
+          description="How many times the launcher retries a failed file download (1–5)."
+        >
+          <input
+            type="number"
+            min={1}
+            max={5}
+            value={draft.downloadRetryCount}
+            onChange={(e) =>
+              set("downloadRetryCount", Math.min(5, Math.max(1, Math.round(Number(e.target.value) || 1))))
+            }
+            className="yz-input w-20 text-xs"
+            aria-label="Download retries"
+          />
+        </Row>
+        <Row
+          title="Per-request timeout"
+          description="Seconds before a single file download is considered stalled and retried (30–600)."
+        >
+          <input
+            type="number"
+            min={30}
+            max={600}
+            step={10}
+            value={draft.downloadTimeoutSec}
+            onChange={(e) =>
+              set("downloadTimeoutSec", Math.min(600, Math.max(30, Math.round(Number(e.target.value) || 30))))
+            }
+            className="yz-input w-24 text-xs"
+            aria-label="Per-request timeout (seconds)"
+          />
+          <span className="text-xs text-noxara-muted">sec</span>
+        </Row>
+      </div>
+
+      <div className="yz-card px-5 py-2 mt-4">
+        <div className="flex items-center gap-2 py-3">
+          <Wrench size={15} className="text-noxara-subtle" />
+          <h2 className="text-sm font-semibold text-noxara-text">Advanced</h2>
+        </div>
+        <Row
+          title="Debug logging"
+          description="Log verbose diagnostics from the launcher and its core engine. Takes effect on the next launch of Noxara."
+        >
+          <Toggle checked={draft.debugMode} onChange={(v) => set("debugMode", v)} label="Debug logging" />
+        </Row>
+        <Separator />
+        <Row title="Data directory" description="Libraries, assets, versions, Java runtimes and instances live here.">
+          <button onClick={() => window.noxara.openDataDirectory()} className="yz-btn-secondary text-xs px-2.5 py-1.5">
+            <FolderOpen size={13} /> Open data directory
+          </button>
+        </Row>
+      </div>
+
+      <div className="yz-card px-5 py-2 mt-4">
+        <div className="flex items-center gap-2 py-3">
+          <UserRound size={15} className="text-noxara-subtle" />
+          <h2 className="text-sm font-semibold text-noxara-text">Accounts</h2>
+        </div>
+        <Row
+          title="Microsoft & offline profiles"
+          description="Manage signed-in Microsoft accounts and offline profiles."
+        >
+          <Link to="/accounts" className="yz-btn-secondary text-xs px-2.5 py-1.5">
+            Manage accounts <ArrowRight size={13} />
+          </Link>
         </Row>
       </div>
 

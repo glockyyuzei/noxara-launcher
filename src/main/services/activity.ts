@@ -239,7 +239,12 @@ export function syncDownloadControls(tasks: Array<{ taskId: string }>): void {
         activity.retryable = true;
         emitUpdated(snapshot(activity), false);
       }
-    } else if (activity.cancellable || activity.retryable) {
+    } else if (
+      (activity.cancellable || activity.retryable) &&
+      // Activities with a control.cancel (batch downloads, launches, repairs) keep
+      // their Cancel affordance — only plain read-only activities lose the flags.
+      !activity.control?.cancel
+    ) {
       activity.cancellable = false;
       activity.retryable = false;
       emitUpdated(snapshot(activity), false);

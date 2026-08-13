@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, X, SearchX, TriangleAlert } from "lucide-react";
-import type { InstanceRecord, ModLoader, ModSearchSort, ModrinthSearchHit } from "@shared/types/ipc";
+import type {
+  InstanceRecord,
+  ModEnvironment,
+  ModLoader,
+  ModrinthCategory,
+  ModSearchSort,
+  ModrinthSearchHit,
+} from "@shared/types/ipc";
 import { useModStore } from "../stores/useModStore";
 import { ModCard } from "../components/ModCard";
 import { ModDetailsModal } from "../components/ModDetailsModal";
@@ -23,12 +30,21 @@ const SORT_OPTIONS: { id: ModSearchSort; label: string }[] = [
   { id: "updated", label: "Updated" },
 ];
 
+const ENVIRONMENT_OPTIONS: { id: ModEnvironment; label: string }[] = [
+  { id: "all", label: "Any environment" },
+  { id: "client", label: "Client" },
+  { id: "server", label: "Server" },
+  { id: "both", label: "Client + server" },
+];
+
 export default function ModsPage() {
   const {
     query,
     loader,
     sort,
     gameVersion,
+    category,
+    environment,
     hits,
     totalHits,
     offset,
@@ -41,6 +57,8 @@ export default function ModsPage() {
     setLoader,
     setSort,
     setGameVersion,
+    setCategory,
+    setEnvironment,
     search,
     nextPage,
     prevPage,
@@ -51,6 +69,7 @@ export default function ModsPage() {
   const [instances, setInstances] = useState<InstanceRecord[]>([]);
   const [installTarget, setInstallTarget] = useState<ModrinthSearchHit | null>(null);
   const [mcVersions, setMcVersions] = useState<string[]>([]);
+  const [categories, setCategories] = useState<ModrinthCategory[]>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
@@ -60,6 +79,8 @@ export default function ModsPage() {
     window.noxara.getVersionManifest().then((manifest) => {
       setMcVersions(manifest.versions.filter((v) => v.type === "release").map((v) => v.id));
     });
+    // Real category list from Modrinth's tag endpoint.
+    window.noxara.getModCategories().then(setCategories).catch(() => setCategories([]));
     search();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -69,7 +90,7 @@ export default function ModsPage() {
     debounceRef.current = setTimeout(() => search(0), 350);
     return () => clearTimeout(debounceRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, loader, sort, gameVersion]);
+  }, [query, loader, sort, gameVersion, category, environment]);
 
   useEffect(() => {
     for (const inst of instances) refreshInstalled(inst.id);
@@ -156,6 +177,29 @@ export default function ModsPage() {
           {mcVersions.map((v) => (
             <option key={v} value={v}>
               Minecraft {v}
+            </option>
+          ))}
+        </select>
+        <select
+          value={category}
+          onChange={(e) => setCategory(e.target.value)}
+          className="yz-select py-1.5 text-xs w-auto"
+        >
+          <option value="all">Any category</option>
+          {categories.map((c) => (
+            <option key={c.slug} value={c.slug}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+        <select
+          value={environment}
+          onChange={(e) => setEnvironment(e.target.value as ModEnvironment)}
+          className="yz-select py-1.5 text-xs w-auto"
+        >
+          {ENVIRONMENT_OPTIONS.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.label}
             </option>
           ))}
         </select>

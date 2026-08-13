@@ -5,7 +5,9 @@
  * TTL cache to avoid hammering the API while the user types in the search box.
  */
 import type {
+  ModEnvironment,
   ModLoader,
+  ModrinthCategory,
   ModrinthSearchHit,
   ModrinthSearchResult,
   ModrinthVersion,
@@ -59,18 +61,49 @@ const SORT_MAP: Record<NonNullable<ModSearchQuery["sort"]>, string> = {
   updated: "updated",
 };
 
-function buildFacets(projectType: string, loader?: ModLoader, gameVersion?: string): string {
+/** Environment filters map onto Modrinth's client_side/server_side facets. Each array
+ * is OR'd internally and AND'd across arrays, so "both" requires client_side AND
+ * server_side compatibility, while "client"/"server" require only the one side. */
+function environmentFacets(environment: ModEnvironment | undefined): string[][] {
+  if (!environment || environment === "all") return [];
+  if (environment === "client") return [["client_side:required", "client_side:optional"]];
+  if (environment === "server") return [["server_side:required", "server_side:optional"]];
+  return [
+    ["client_side:required", "client_side:optional"],
+    ["server_side:required", "server_side:optional"],
+  ];
+}
+
+/** Builds Modrinth's facet string (OR within each array, AND across arrays). Exported
+ * for tests — the renderer can never call this directly. */
+export function buildFacets(
+  projectType: string,
+  loader?: ModLoader,
+  gameVersion?: string,
+  category?: string,
+  environment?: ModEnvironment
+): string {
   const facets: string[][] = [[`project_type:${projectType}`]];
   if (loader) facets.push([`categories:${loader}`]);
   if (gameVersion) facets.push([`versions:${gameVersion}`]);
+  if (category) facets.push([`categories:${category}`]);
+  facets.push(...environmentFacets(environment));
   return JSON.stringify(facets);
+}
+
+/** The Modrinth category list for mods, used to build the browse filters. */
+export async function getModCategories(): Promise<ModrinthCategory[]> {
+  const raw = await modrinthFetch<Array<{ name: string; slug: string; icon: string }>>("/tag/category", {
+    project_type: "mod",
+  });
+  return raw.map((c) => ({ name: c.name, slug: c.slug, icon: c.icon }));
 }
 
 export async function searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult> {
   const projectType = query.projectType ?? "mod";
   const raw = await modrinthFetch<ModrinthSearchResponseRaw>("/search", {
     query: query.query ?? "",
-    facets: buildFacets(projectType, query.loader, query.gameVersion),
+    facets: buildFacets(projectType, query.loader, query.gameVersion, query.category, query.environment),
     index: SORT_MAP[query.sort ?? "relevance"],
     offset: String(query.offset ?? 0),
     limit: String(query.limit ?? 20),
@@ -84,7 +117,7 @@ export async function searchMods(query: ModSearchQuery): Promise<ModrinthSearchR
   if (raw.hits.length === 0 && query.gameVersion) {
     const widened = await modrinthFetch<ModrinthSearchResponseRaw>("/search", {
       query: query.query ?? "",
-      facets: buildFacets(projectType, query.loader, undefined),
+      facets: buildFacets(projectType, query.loader, undefined, query.category, query.environment),
       index: SORT_MAP[query.sort ?? "relevance"],
       offset: String(query.offset ?? 0),
       limit: String(query.limit ?? 20),

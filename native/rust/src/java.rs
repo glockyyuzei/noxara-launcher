@@ -274,7 +274,7 @@ pub async fn ensure_runtime(
 
     // Reuses the batch downloader: skips already-valid files, streams progress events to
     // the caller's activity/task id, and bounds concurrency.
-    let failed = crate::downloads::download_batch(client, task_id, tasks, 8).await?;
+    let failed = crate::downloads::download_batch(client, task_id, tasks, 8, 3, None).await?;
     if !failed.is_empty() {
         bail!(
             "failed to download {} of {} Java {major_version} runtime files",

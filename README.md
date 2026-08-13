@@ -12,15 +12,21 @@ working flows.
 
 **Instances**
 - Create instances for **Vanilla, Fabric, Forge, NeoForge, and Quilt** with isolated
-  directories (mods, configs, saves, screenshots live per-instance)
+  directories (mods, configs, saves, screenshots live per-instance); all loader builds
+  come from the live registries (with a Retry on version-load failures)
 - Live Mojang version manifest (cached, no hardcoded version lists) with snapshot toggle
 - Real launch pipeline: downloads client jar + libraries + assets with **sha1
   verification**, resolves a compatible Java runtime, builds JVM args, spawns Java
   directly (no shell), streams live console output, and detects crashes by exit code
+- **Crash diagnosis**: when the game exits unexpectedly, the launcher analyzes the log
+  tail (OOM, missing deps, duplicate mods, JVM init failure, …) and shows an actionable
+  banner with View log / Copy error / Restart / Repair
 - **Instance Health check & one-click Repair** (client files, Java runtime, mods, deps)
 - Duplicate, export as a modpack, open folder, favorite, delete
-- **Per-instance console**: colored, live output with stderr/error highlighting, Copy /
-  Clear / Follow controls — launch failures are logged right into it
+- **Per-instance console**: colored, live output with stderr/error highlighting, search,
+  timestamps, Copy / Clear / Follow controls — launch failures are logged right into it
+- Every instance shows its real lifecycle state (Launching → Running → Stopping →
+  Crashed) everywhere it appears
 
 **Content**
 - **Mods**: search & install from Modrinth with version/dependency resolution, update
@@ -59,10 +65,13 @@ working flows.
   Server List Ping (latency, version, player count, MOTD, favicon)
 
 **General**
-- Global **Downloads/Activity manager**: real progress, cancel/retry for single-file
-  downloads, clearable history
+- Global **Downloads/Activity manager**: real progress, cancel/retry, clearable history —
+  launches, loader installs, repairs, and Java runtime downloads are also cancellable
 - First-class settings: game directory, memory per instance, window size, close-on-
-  launch behavior, concurrent download limit
+  launch behavior, concurrent download limit, download retries + per-request timeout,
+  **start on boot, minimize to tray, close-with-running-instances confirmation**,
+  **UI scale / compact mode / animations**, debug logging, open-data-directory
+- **Global search (Ctrl+K)**: jump to pages, instances, accounts, and servers
 - SQLite persistence with a real migration runner
 
 ## Requirements

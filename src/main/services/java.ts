@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { coreBridge } from "./core-bridge";
+import { coreBridge, type CoreBridgeError } from "./core-bridge";
 import { javaDir } from "../filesystem/paths";
-import { startActivity, succeedActivity, failActivity } from "./activity";
+import { startActivity, updateActivity, succeedActivity, failActivity } from "./activity";
 import type { JavaInstallation } from "../../shared/types/ipc";
 
 interface RustJavaInstallation {
@@ -69,7 +69,13 @@ export async function installJavaRuntime(majorVersion: number): Promise<JavaInst
     title: `Java ${majorVersion}`,
     description: "Downloading Mojang's official runtime",
     status: "downloading",
+    control: {
+      cancel: async () => {
+        await coreBridge.call("downloads.cancel", { taskId: activityId }).catch(() => undefined);
+      },
+    },
   });
+  updateActivity(activityId, { cancellable: true });
   try {
     const path = await ensureJavaRuntime("", majorVersion, activityId);
     const install = await testJavaPath(path);
@@ -81,7 +87,9 @@ export async function installJavaRuntime(majorVersion: number): Promise<JavaInst
     });
     return install;
   } catch (err) {
-    failActivity(activityId, err instanceof Error ? err.message : "Java download failed");
+    if (!(err instanceof Error && (err as CoreBridgeError).code === "cancelled")) {
+      failActivity(activityId, err instanceof Error ? err.message : "Java download failed");
+    }
     throw err;
   }
 }

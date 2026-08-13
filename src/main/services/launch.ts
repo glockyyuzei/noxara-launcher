@@ -9,7 +9,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
-import { coreBridge } from "./core-bridge";
+import { coreBridge, type CoreBridgeError } from "./core-bridge";
 import { getDb } from "./database";
 import { getActiveAccount, resolveMinecraftSession } from "./accounts";
 import { carrySkinIntoInstance } from "./skins";
@@ -20,7 +20,8 @@ import { getFabricVersionDetail } from "./fabric";
 import { getQuiltVersionDetail } from "./quilt";
 import { installForge } from "./forge";
 import { installNeoForge } from "./neoforge";
-import { startActivity, progressActivity, succeedActivity, failActivity } from "./activity";
+import { listInstances } from "./instances";
+import { startActivity, updateActivity, progressActivity, succeedActivity, failActivity } from "./activity";
 
 /** Maps an instance id to the activity that represents its launch, so game.started
  * can flip it to Completed exactly when the JVM actually comes up. */
@@ -102,7 +103,8 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
   if (!instance) throw new Error(`instance ${instanceId} not found`);
 
   // The launch activity doubles as the taskId for the file downloads, so the batch
-  // progress events update this same record.
+  // progress events update this same record. Cancelling it aborts the in-flight
+  // batch in noxara-core (RPC code "cancelled").
   const activityId = randomUUID();
   startActivity(activityId, {
     type: "instance",
@@ -110,7 +112,13 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     instanceId: instance.id,
     description: "Preparing to launch",
     status: "preparing",
+    control: {
+      cancel: async () => {
+        await coreBridge.call("downloads.cancel", { taskId: activityId }).catch(() => undefined);
+      },
+    },
   });
+  updateActivity(activityId, { cancellable: true });
   launchActivityByInstance.set(instanceId, activityId);
 
   try {
@@ -172,7 +180,13 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
         instanceId: instance.id,
         description: `Installing ${loaderName} ${instance.loader_version}`,
         status: "installing",
+        control: {
+          cancel: async () => {
+            await coreBridge.call("downloads.cancel", { taskId: loaderActivityId }).catch(() => undefined);
+          },
+        },
       });
+      updateActivity(loaderActivityId, { cancellable: true });
       try {
         const { detail } =
           instance.loader === "forge"
@@ -195,7 +209,9 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
         succeedActivity(loaderActivityId, { description: `${loaderName} installed` });
         versionDetail = detail;
       } catch (err) {
-        failActivity(loaderActivityId, err instanceof Error ? err.message : `${loaderName} install failed`);
+        if (!isCancelledError(err)) {
+          failActivity(loaderActivityId, err instanceof Error ? err.message : `${loaderName} install failed`);
+        }
         throw err;
       }
     }
@@ -259,10 +275,19 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     progressActivity(activityId, {}, "launching", { description: "Launching Minecraft" });
     return result;
   } catch (err) {
-    failActivity(activityId, err instanceof Error ? err.message : "Launch failed");
+    if (!isCancelledError(err)) {
+      failActivity(activityId, err instanceof Error ? err.message : "Launch failed");
+    }
     launchActivityByInstance.delete(instanceId);
     throw err;
   }
+}
+
+/** True when a core operation was deliberately cancelled (RPC code "cancelled") — in
+ * that case the activity was already marked cancelled by cancelActivity, so services
+ * must not flip it to failed a moment later. */
+function isCancelledError(err: unknown): boolean {
+  return err instanceof Error && (err as CoreBridgeError).code === "cancelled";
 }
 
 /** The set of instance ids whose Minecraft process is still alive on the Rust side. */
@@ -273,5 +298,20 @@ export async function listRunningInstances(): Promise<string[]> {
 
 /** Terminates the tracked Minecraft process for an instance, if one is running. */
 export async function killInstance(instanceId: string): Promise<void> {
-  await coreBridge.call("launch.stop", { instanceId });
+  const instance = listInstances().find((i) => i.id === instanceId);
+  const activityId = randomUUID();
+  startActivity(activityId, {
+    type: "instance",
+    title: instance?.name ?? "Instance",
+    instanceId,
+    description: "Stopping instance",
+    status: "stopping",
+  });
+  try {
+    await coreBridge.call("launch.stop", { instanceId });
+    succeedActivity(activityId, { description: "Instance stopped" });
+  } catch (err) {
+    failActivity(activityId, err instanceof Error ? err.message : "Failed to stop instance");
+    throw err;
+  }
 }

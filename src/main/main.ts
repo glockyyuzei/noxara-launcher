@@ -5,6 +5,12 @@ import { registerIpcHandlers } from "./ipc/handlers";
 import { coreBridge } from "./services/core-bridge";
 import { getDb, closeDb } from "./services/database";
 import { getSettings } from "./services/settings";
+import {
+  applyDebugLogLevel,
+  applyStartOnBoot,
+  applyTrayPreference,
+  installWindowBehavior,
+} from "./app-settings";
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -29,6 +35,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     getDb(); // run migrations before anything else touches the DB
+    applyDebugLogLevel(); // before coreBridge.start() so the core inherits the level
     coreBridge.start();
     registerIpcHandlers(() => mainWindow);
 
@@ -56,6 +63,12 @@ if (!gotLock) {
     mainWindow.on("closed", () => {
       mainWindow = null;
     });
+
+    // Window behavior + tray follow Settings (and re-apply when settings change via
+    // the IPC handler). isClosingForLaunch exempts the automatic "close on launch" path.
+    installWindowBehavior(() => mainWindow, () => closeOnLaunchPending);
+    applyTrayPreference(() => mainWindow);
+    applyStartOnBoot();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

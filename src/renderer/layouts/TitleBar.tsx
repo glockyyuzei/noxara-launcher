@@ -1,11 +1,20 @@
-import { Minus, Square, X } from "lucide-react";
+import { Minus, Square, X, Search } from "lucide-react";
 import { Tooltip } from "../components/Tooltip";
 
-export function TitleBar() {
+export function TitleBar({ onOpenSearch }: { onOpenSearch?: () => void }) {
   return (
     <div className="h-9 flex items-center justify-between bg-noxara-black border-b border-noxara-border titlebar-drag select-none shrink-0">
       <div className="px-4 text-xs font-semibold tracking-widest text-noxara-subtle">NOXARA LAUNCHER</div>
       <div className="flex titlebar-no-drag">
+        <Tooltip label="Search (Ctrl+K)" side="bottom" delay={600}>
+          <button
+            onClick={onOpenSearch}
+            className="w-11 h-9 flex items-center justify-center text-noxara-subtle hover:bg-noxara-surface hover:text-noxara-text transition-colors duration-150"
+            aria-label="Search"
+          >
+            <Search size={14} />
+          </button>
+        </Tooltip>
         <Tooltip label="Minimize" side="bottom" delay={600}>
           <button
             onClick={() => window.noxara.windowMinimize()}

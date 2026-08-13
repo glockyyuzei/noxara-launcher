@@ -25,6 +25,9 @@ use crate::quilt::QuiltApiError;
 /// detail preflight performs) is reported as `network_error` so the Electron side can
 /// retry it.
 fn classify_error_code(err: &anyhow::Error) -> &'static str {
+    if err.downcast_ref::<downloads::DownloadCancelled>().is_some() {
+        return "cancelled";
+    }
     if let Some(fabric_err) = err.downcast_ref::<FabricApiError>() {
         return fabric_err.code;
     }
@@ -425,9 +428,31 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
                     .and_then(|v| v.as_u64())
                     .map(|v| v as usize)
                     .unwrap_or(8),
+                req.params
+                    .get("maxAttempts")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .unwrap_or(3),
+                req.params
+                    .get("perRequestTimeoutSec")
+                    .and_then(|v| v.as_u64())
+                    .map(|secs| std::time::Duration::from_secs(secs)),
             )
             .await?;
             Ok(json!({ "failed": failed }))
+        }
+
+        "downloads.cancel" => {
+            let task_id = req
+                .params
+                .get("taskId")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing taskId"))?
+                .to_string();
+            // Non-blocking: marks the task cancelled; any in-flight downloads.batch
+            // with this task id observes it and aborts (RPC code "cancelled").
+            downloads::mark_cancelled(&task_id);
+            Ok(json!({ "cancelled": true }))
         }
 
         "launch.buildArgs" => {
@@ -543,6 +568,21 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("missing overridesDir"))?;
             modpack::create(zip_path, index_path, overrides_dir).await?;
+            Ok(json!({ "created": true }))
+        }
+
+        "backup.create" => {
+            let zip_path = req
+                .params
+                .get("zipPath")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing zipPath"))?;
+            let source_dir = req
+                .params
+                .get("sourceDir")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing sourceDir"))?;
+            modpack::create_directory_archive(zip_path, source_dir).await?;
             Ok(json!({ "created": true }))
         }
 

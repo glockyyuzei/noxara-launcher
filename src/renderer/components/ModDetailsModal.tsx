@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Download, Users, X, ChevronLeft } from "lucide-react";
+import { Download, Users, X, ChevronLeft, Check, AlertTriangle, XCircle, Loader2 } from "lucide-react";
 import type {
   ContentCategory,
   InstanceRecord,
+  ModDependenciesResult,
   ModrinthSearchHit,
   ModrinthVersion,
 } from "@shared/types/ipc";
@@ -62,6 +63,9 @@ export function ModDetailsModal({
   const [versionsError, setVersionsError] = useState<string | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [imgFailed, setImgFailed] = useState(false);
+  const [deps, setDeps] = useState<ModDependenciesResult | null>(null);
+  const [depsLoading, setDepsLoading] = useState(false);
+  const [depsError, setDepsError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedInstance) return;
@@ -110,6 +114,42 @@ export function ModDetailsModal({
     : null;
   const installing = installKey ? installingKeys.has(installKey) : false;
   const noun = CATEGORY_LABEL[category as ContentCategory];
+
+  // Dependency resolution for the currently-selected version + instance. Only mods
+  // (not resource packs/shaders) declare dependencies on Modrinth.
+  useEffect(() => {
+    if (!selectedInstance || !selectedVersionId || category !== "mod") {
+      setDeps(null);
+      setDepsError(null);
+      return;
+    }
+    let cancelled = false;
+    setDepsLoading(true);
+    setDepsError(null);
+    setDeps(null);
+    window.noxara
+      .getModDependencies(selectedInstance.id, selectedVersionId)
+      .then((result) => {
+        if (cancelled) return;
+        setDeps(result);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setDepsError(e instanceof Error ? e.message : "Couldn't check dependencies");
+      })
+      .finally(() => {
+        if (!cancelled) setDepsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedInstance, selectedVersionId, category]);
+
+  // An installed incompatible dependency is a hard block — the install would break
+  // whichever mod already owns that project.
+  const conflictsInstalled =
+    deps?.incompatible.some((c) => c.installed) ?? false;
+  const missingCount = deps?.missing.length ?? 0;
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-8 animate-fade-in">
@@ -230,17 +270,120 @@ export function ModDetailsModal({
                   ))}
                 </div>
               )}
+              {category === "mod" && selectedVersionId && (
+                <DependencySection
+                  loading={depsLoading}
+                  error={depsError}
+                  deps={deps}
+                />
+              )}
               <button
                 onClick={() => selectedVersionId && onInstall(selectedInstance.id, mod, selectedVersionId)}
-                disabled={!selectedVersionId || installing}
+                disabled={!selectedVersionId || installing || conflictsInstalled}
                 className="yz-btn-primary w-full text-sm py-2 disabled:opacity-50"
+                title={conflictsInstalled ? "Remove the conflicting mod first" : undefined}
               >
-                {installing ? "Installing…" : `Install ${noun}`}
+                {installing
+                  ? "Installing…"
+                  : conflictsInstalled
+                    ? "Conflicting mod installed"
+                    : missingCount > 0
+                      ? `Install ${noun} + ${missingCount} dependenc${missingCount === 1 ? "y" : "ies"}`
+                      : `Install ${noun}`}
               </button>
             </>
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Renders the dependency status of the selected version against the target instance:
+ * installed requirements, missing requirements (auto-installed on install), and real
+ * conflicts that block the install. Loading/error states are non-blocking. */
+function DependencySection({
+  loading,
+  error,
+  deps,
+}: {
+  loading: boolean;
+  error: string | null;
+  deps: ModDependenciesResult | null;
+}) {
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-noxara-muted px-3 py-2 mb-3 rounded border border-noxara-border">
+        <Loader2 size={13} className="animate-spin" /> Checking dependencies…
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-noxara-warning px-3 py-2 mb-3 rounded border border-noxara-warning/30 bg-noxara-warning/5">
+        <AlertTriangle size={13} /> Couldn't check dependencies — {error}
+      </div>
+    );
+  }
+  if (!deps) return null;
+
+  const installedConflicts = deps.incompatible.filter((c) => c.installed);
+  const showSection = deps.present.length > 0 || deps.missing.length > 0 || installedConflicts.length > 0;
+
+  if (!showSection) return null;
+
+  return (
+    <div className="mb-3 rounded border border-noxara-border overflow-hidden">
+      {deps.missing.length > 0 && (
+        <div className="px-3 py-2 bg-noxara-warning/5 border-b border-noxara-border">
+          <div className="flex items-center gap-1.5 text-xs text-noxara-warning mb-1">
+            <AlertTriangle size={13} /> This mod requires:
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {deps.missing.map((d) => (
+              <span
+                key={d.projectId}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-noxara-surface border border-noxara-border text-noxara-text"
+              >
+                {d.name ?? d.projectId}
+                <span className="text-[10px] text-noxara-muted">· auto-install</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+      {deps.present.length > 0 && (
+        <div className="px-3 py-2 border-b border-noxara-border">
+          <div className="space-y-1">
+            {deps.present.map(({ dependency }) => (
+              <div key={dependency.projectId} className="flex items-center gap-1.5 text-xs text-noxara-success">
+                <Check size={13} /> {dependency.name ?? dependency.projectId}
+                <span className="text-[10px] text-noxara-muted">· installed</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {installedConflicts.length > 0 && (
+        <div className="px-3 py-2 bg-noxara-error/5">
+          <div className="flex items-center gap-1.5 text-xs text-noxara-error mb-1">
+            <XCircle size={13} /> Conflicts with an installed mod:
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {installedConflicts.map(({ dependency }) => (
+              <span
+                key={dependency.projectId}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-noxara-error/10 border border-noxara-error/30 text-noxara-error"
+              >
+                {dependency.name ?? dependency.projectId}
+              </span>
+            ))}
+          </div>
+          <p className="text-[11px] text-noxara-muted mt-1">
+            Remove the conflicting mod from the instance before installing this one.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

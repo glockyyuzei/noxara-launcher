@@ -22,6 +22,15 @@ export const DEFAULT_SETTINGS: LauncherSettings = {
   startMinimized: false,
   showSnapshots: false,
   maxConcurrentDownloads: 8,
+  startOnBoot: false,
+  minimizeToTray: false,
+  confirmBeforeCloseRunningInstances: true,
+  uiScale: 1,
+  compactMode: false,
+  uiAnimations: true,
+  downloadRetryCount: 3,
+  downloadTimeoutSec: 120,
+  debugMode: false,
 };
 
 function clampSettings(s: Record<string, unknown>): LauncherSettings {
@@ -44,6 +53,24 @@ function clampSettings(s: Record<string, unknown>): LauncherSettings {
       typeof s.maxConcurrentDownloads === "number" && s.maxConcurrentDownloads >= 1
         ? Math.min(Math.round(s.maxConcurrentDownloads), 16)
         : d.maxConcurrentDownloads,
+    startOnBoot: typeof s.startOnBoot === "boolean" ? s.startOnBoot : d.startOnBoot,
+    minimizeToTray: typeof s.minimizeToTray === "boolean" ? s.minimizeToTray : d.minimizeToTray,
+    confirmBeforeCloseRunningInstances:
+      typeof s.confirmBeforeCloseRunningInstances === "boolean"
+        ? s.confirmBeforeCloseRunningInstances
+        : d.confirmBeforeCloseRunningInstances,
+    uiScale: typeof s.uiScale === "number" && s.uiScale >= 0.7 && s.uiScale <= 1.5 ? s.uiScale : d.uiScale,
+    compactMode: typeof s.compactMode === "boolean" ? s.compactMode : d.compactMode,
+    uiAnimations: typeof s.uiAnimations === "boolean" ? s.uiAnimations : d.uiAnimations,
+    downloadRetryCount:
+      typeof s.downloadRetryCount === "number" && s.downloadRetryCount >= 1 && s.downloadRetryCount <= 5
+        ? Math.round(s.downloadRetryCount)
+        : d.downloadRetryCount,
+    downloadTimeoutSec:
+      typeof s.downloadTimeoutSec === "number" && s.downloadTimeoutSec >= 30 && s.downloadTimeoutSec <= 600
+        ? Math.round(s.downloadTimeoutSec)
+        : d.downloadTimeoutSec,
+    debugMode: typeof s.debugMode === "boolean" ? s.debugMode : d.debugMode,
   };
 }
 

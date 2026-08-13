@@ -19,13 +19,16 @@ import {
 } from "lucide-react";
 import type { InstanceRecord } from "@shared/types/ipc";
 import { InstanceCover } from "../components/InstanceCover";
+import { InstanceStateBadge } from "../components/InstanceStateBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { useAccountStore } from "../stores/useAccountStore";
 import { launchInstance, useLaunchStore } from "../stores/useLaunchStore";
+import { useInstanceState } from "../stores/useInstanceState";
 import { useActivityStore } from "../stores/useActivityStore";
 import { selectActive } from "../components/ActivityIndicator";
 import { formatBytes, formatSpeed, formatEta } from "../utils/format";
+import { friendlyErrorMessage } from "../lib/coreErrors";
 import { toast } from "../stores/useToastStore";
 
 function loaderLabel(loader: InstanceRecord["loader"]): string {
@@ -137,8 +140,9 @@ function HeroBanner() {
 /* -------------------------------------------------------------------------- */
 
 function ContinuePlayingCard({ instance }: { instance: InstanceRecord }) {
-  const runningIds = useLaunchStore((s) => s.runningInstanceIds);
-  const launchingIds = useLaunchStore((s) => s.launchingInstanceIds);
+  const state = useInstanceState(instance.id);
+  const running = state === "RUNNING" || state === "STOPPING";
+  const launching = state === "LAUNCHING" || state === "DOWNLOADING" || state === "INSTALLING";
   const kill = useLaunchStore((s) => s.kill);
   const [modCount, setModCount] = useState<number | null>(null);
 
@@ -157,14 +161,11 @@ function ContinuePlayingCard({ instance }: { instance: InstanceRecord }) {
     };
   }, [instance.id]);
 
-  const running = runningIds.has(instance.id);
-  const launching = launchingIds.has(instance.id);
-
   async function handlePlay() {
     try {
       await launchInstance(instance.id);
     } catch (e) {
-      toast.error("Could not launch Minecraft", e instanceof Error ? e.message : undefined);
+      toast.error("Could not launch Minecraft", friendlyErrorMessage(e));
     }
   }
   async function handleKill() {
@@ -191,18 +192,13 @@ function ContinuePlayingCard({ instance }: { instance: InstanceRecord }) {
         <div className="flex items-center gap-3 md:gap-4">
           <div className="relative shrink-0">
             <InstanceCover loader={instance.loader} className="w-16 h-16 md:w-20 md:h-20 rounded-lg" compact />
-            {running && (
-              <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-noxara-success animate-pulse" />
-            )}
+            <span className="absolute -top-1 -right-1">
+              <InstanceStateBadge instanceId={instance.id} />
+            </span>
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex flex-wrap items-center gap-1.5 mb-1">
               <span className="text-base md:text-lg font-semibold text-noxara-white truncate">{instance.name}</span>
-              {running && (
-                <span className="flex items-center gap-1 text-[10px] font-medium bg-noxara-success/10 text-noxara-success px-1.5 py-0.5 rounded-full">
-                  <span className="w-1 h-1 rounded-full bg-noxara-success animate-pulse" /> RUNNING
-                </span>
-              )}
             </div>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-noxara-subtle">
               <span className="inline-flex items-center gap-1">
@@ -253,8 +249,9 @@ function ContinuePlayingCard({ instance }: { instance: InstanceRecord }) {
 /* -------------------------------------------------------------------------- */
 
 function InstanceCard({ instance, index }: { instance: InstanceRecord; index: number }) {
-  const runningIds = useLaunchStore((s) => s.runningInstanceIds);
-  const launchingIds = useLaunchStore((s) => s.launchingInstanceIds);
+  const state = useInstanceState(instance.id);
+  const running = state === "RUNNING" || state === "STOPPING";
+  const launching = state === "LAUNCHING" || state === "DOWNLOADING" || state === "INSTALLING";
   const kill = useLaunchStore((s) => s.kill);
   const [modCount, setModCount] = useState<number | null>(null);
 
@@ -273,14 +270,11 @@ function InstanceCard({ instance, index }: { instance: InstanceRecord; index: nu
     };
   }, [instance.id]);
 
-  const running = runningIds.has(instance.id);
-  const launching = launchingIds.has(instance.id);
-
   async function handlePlay() {
     try {
       await launchInstance(instance.id);
     } catch (e) {
-      toast.error("Could not launch Minecraft", e instanceof Error ? e.message : undefined);
+      toast.error("Could not launch Minecraft", friendlyErrorMessage(e));
     }
   }
   async function handleKill() {
@@ -304,11 +298,9 @@ function InstanceCard({ instance, index }: { instance: InstanceRecord; index: nu
               ★
             </span>
           )}
-          {running && (
-            <span className="absolute top-1.5 right-1.5 flex items-center gap-1 text-[9px] font-medium bg-black/70 backdrop-blur-sm text-noxara-success px-1.5 py-0.5 rounded">
-              <span className="w-1 h-1 rounded-full bg-noxara-success animate-pulse" /> RUNNING
-            </span>
-          )}
+          <span className="absolute top-1.5 right-1.5">
+            <InstanceStateBadge instanceId={instance.id} />
+          </span>
         </div>
         <div className="px-2.5 pt-2 pb-1">
           <div className="text-sm font-medium truncate group-hover:text-noxara-white transition-colors">{instance.name}</div>

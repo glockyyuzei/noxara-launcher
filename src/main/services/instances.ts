@@ -4,7 +4,7 @@ import path from "node:path";
 import { shell } from "electron";
 import { getDb } from "./database";
 import { instanceDir, slugifyInstanceName } from "../filesystem/paths";
-import { startActivity, succeedActivity, failActivity } from "./activity";
+import { startActivity, updateActivity, succeedActivity, failActivity } from "./activity";
 import type { CreateInstanceInput, InstanceRecord } from "../../shared/types/ipc";
 import { resolveFabricLoaderVersion } from "./fabric";
 import { resolveQuiltLoaderVersion } from "./quilt";
@@ -217,6 +217,9 @@ export async function duplicateInstance(id: string, newName: string): Promise<In
     // Copy mutable content (mods/config/saves/etc.) so the duplicate is fully independent,
     // per spec section 12: duplicates must not share mutable files.
     const newDir = getInstanceDirById(created.id);
+    // Tie the wrapper activity to the new instance so the UI can show CREATING while
+    // the mutable content is copied (createInstance's own activity had no id yet).
+    updateActivity(activityId, { instanceId: created.id });
     for (const sub of ["mods", "config", "saves", "resourcepacks", "shaderpacks"]) {
       const src = path.join(source.instance_dir, sub);
       const dest = path.join(newDir, sub);
@@ -236,4 +239,45 @@ export async function duplicateInstance(id: string, newName: string): Promise<In
 export function openInstanceFolder(id: string): void {
   const dir = getInstanceDirById(id);
   shell.openPath(dir);
+}
+
+/** Editable per-instance settings. Only the fields the UI actually exposes today —
+ * pinning a Java runtime, or changing memory — are updatable; everything else is
+ * immutable once the instance exists. */
+export interface UpdateInstanceInput {
+  name?: string;
+  javaPath?: string | null;
+  minRamMb?: number;
+  maxRamMb?: number;
+}
+
+/** Applies a partial update to an instance's mutable settings and returns the fresh
+ * record. Validates the same constraints as creation (RAM bounds, name non-empty). */
+export function updateInstance(id: string, patch: UpdateInstanceInput): InstanceRecord {
+  const db = getDb();
+  const existing = db.prepare("SELECT * FROM instances WHERE id = ?").get(id) as InstanceRow | undefined;
+  if (!existing) throw new Error(`instance ${id} not found`);
+
+  if (patch.name !== undefined && patch.name.trim().length === 0) {
+    throw new Error("Instance name cannot be empty");
+  }
+  const minRamMb = patch.minRamMb ?? existing.min_ram_mb;
+  const maxRamMb = patch.maxRamMb ?? existing.max_ram_mb;
+  if (minRamMb < 512) throw new Error("Minimum RAM must be at least 512 MB");
+  if (maxRamMb < minRamMb) throw new Error("Maximum RAM cannot be lower than minimum RAM");
+  const totalSystemMb = Math.round(require("node:os").totalmem() / (1024 * 1024));
+  if (maxRamMb > totalSystemMb * 0.9) {
+    throw new Error(`Requested ${maxRamMb} MB exceeds a safe share of this system's ${totalSystemMb} MB RAM`);
+  }
+
+  db.prepare("UPDATE instances SET name = ?, java_path = ?, min_ram_mb = ?, max_ram_mb = ? WHERE id = ?").run(
+    patch.name !== undefined ? patch.name.trim() : existing.name,
+    patch.javaPath === undefined ? existing.java_path : patch.javaPath,
+    minRamMb,
+    maxRamMb,
+    id
+  );
+
+  const updated = db.prepare("SELECT * FROM instances WHERE id = ?").get(id) as InstanceRow;
+  return rowToRecord(updated);
 }

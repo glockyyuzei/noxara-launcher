@@ -19,7 +19,7 @@ import { getDb } from "./database";
 import { getInstanceDirById, listInstances } from "./instances";
 import { assertWithin } from "../filesystem/paths";
 import { registerDownload, unregisterDownload, signalFor } from "./download-control";
-import { startActivity, succeedActivity, failActivity } from "./activity";
+import { startActivity, progressActivity, succeedActivity, failActivity, isActivityActive } from "./activity";
 import * as modrinth from "./modrinth";
 import type {
   InstalledMod,
@@ -122,6 +122,14 @@ async function downloadWithProgress(
           bytesDownloaded,
           totalBytes,
         });
+        // Feed real byte deltas into the global activity manager (the activity owns
+        // the same taskId as this download, whether it's a standalone mod install or
+        // a repair/launch batch), so the overlay shows actual bytes + rate + ETA.
+        progressActivity(taskId, {
+          currentBytes: bytesDownloaded,
+          totalBytes,
+          progress: totalBytes > 0 ? Math.min(1, bytesDownloaded / totalBytes) : undefined,
+        });
       }
     }
     await new Promise<void>((resolve, reject) =>
@@ -189,6 +197,9 @@ async function installVersionFile(
     const destPath = assertWithin(dir, safeFilename);
 
     try {
+      if (opts.manageActivity) {
+        progressActivity(taskId, {}, "downloading", { description: `Downloading ${version.name}` });
+      }
       await downloadWithProgress(file.url, destPath, taskId, version.name, instanceId);
     } catch (err) {
       modDownloadEvents.emit("complete", {
@@ -210,9 +221,14 @@ async function installVersionFile(
 
     const db = getDb();
     const existing = db
-      .prepare("SELECT id FROM mods WHERE instance_id = ? AND source_id = ?")
-      .get(instanceId, opts.sourceId) as { id: string } | undefined;
+      .prepare("SELECT id, filename FROM mods WHERE instance_id = ? AND source_id = ?")
+      .get(instanceId, opts.sourceId) as { id: string; filename: string } | undefined;
     const id = existing?.id ?? randomUUID();
+    // Updating/reinstalling: drop the previously-downloaded file when its name
+    // changed so an update never leaves a stale duplicate behind.
+    if (existing && existing.filename && existing.filename !== safeFilename) {
+      fs.rmSync(assertWithin(dir, path.basename(existing.filename)), { force: true });
+    }
 
     const row: ModRow = {
       id,
@@ -279,11 +295,59 @@ async function installModCore(
   taskId: string
 ): Promise<InstalledMod> {
   const version: ModrinthVersion = await modrinth.getVersion(versionId);
-  return installVersionFile(instanceId, version, taskId, {
-    source: "modrinth",
-    sourceId: projectId,
-    manageActivity: true,
+  // Register the activity up front (the id is shared by the whole install) so the
+  // dependency downloads that follow report real byte progress through it. When the
+  // main file install runs it re-registers the same id, which just resets timestamps.
+  startActivity(taskId, {
+    type: "mod",
+    title: version.name,
+    description: "Preparing mod download",
+    instanceId,
+    status: "preparing",
   });
+  try {
+    // 1. Install missing required dependencies FIRST so a dependency failure aborts
+    //    before the mod itself lands — the mod can never sit installed-but-broken.
+    await installMissingDependenciesForVersion(instanceId, version, taskId);
+    // 2. Then the mod itself (manageActivity completes the shared activity).
+    return await installVersionFile(instanceId, version, taskId, {
+      source: "modrinth",
+      sourceId: projectId,
+      manageActivity: true,
+    });
+  } catch (err) {
+    // Deps-first failure means the mod row was never created; fail the activity unless
+    // installVersionFile already did (it moves the record to recent in that case).
+    if (isActivityActive(taskId)) {
+      failActivity(taskId, err instanceof Error ? err.message : "Install failed");
+    }
+    throw err;
+  }
+}
+
+/** Installs every missing required dependency of `version` into the instance. Uses
+ * the same activity/taskId as the parent install so the overlay shows one continuous
+ * operation; dependency downloads report real byte progress through it. */
+async function installMissingDependenciesForVersion(
+  instanceId: string,
+  version: ModrinthVersion,
+  taskId: string
+): Promise<void> {
+  const { loader, gameVersion } = instanceLoaderAndVersion(instanceId);
+  if (!loader) return;
+
+  const installedProjectIds = new Set(
+    listInstalledMods(instanceId)
+      .map((m) => m.sourceId)
+      .filter((id): id is string => Boolean(id))
+  );
+
+  const missing = await getModDependencies(instanceId, version.id).then((r) => r.missing);
+  for (const dep of missing) {
+    if (installedProjectIds.has(dep.projectId)) continue;
+    await resolveAndInstallDependency(instanceId, dep.projectId, taskId, loader, gameVersion);
+    installedProjectIds.add(dep.projectId);
+  }
 }
 
 export function removeMod(instanceId: string, modId: string): void {
@@ -383,7 +447,13 @@ export async function getModDependencies(
     if (installed) result.present.push({ dependency: dep, installed: true });
     else result.missing.push(dep);
   }
-  result.incompatible = incompatible;
+  // Only *real* conflicts matter to the user: an incompatibility with a project that
+  // isn't installed is moot (the mod can install fine), so it's reported with
+  // `installed: false` and the UI ignores it. Installed conflicts block the install.
+  result.incompatible = incompatible.map((dep) => ({
+    dependency: dep,
+    installed: installedProjectIds.has(dep.projectId),
+  }));
   result.optional = optional;
 
   return result;

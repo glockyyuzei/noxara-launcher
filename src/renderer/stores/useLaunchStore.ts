@@ -1,27 +1,42 @@
 import { create } from "zustand";
-import type { GameOutputPayload } from "@shared/types/ipc";
+import type { CrashInfo, GameOutputPayload } from "@shared/types/ipc";
 
 /**
  * Tracks the real launch lifecycle for every instance: launching (IPC call in flight,
  * or spawned but no "game.started" yet), running (confirmed via the core's process
- * registry), and stopped. The renderer never assumes a state on its own — it derives
- * everything from core events (`game.started`/`game.output`/`game.exit`) and periodic
- * reconciliation against `listRunningInstances`, so a process killed manually or a
- * crash is reflected correctly even if an event was missed.
+ * registry), stopped, stopping (kill in flight), crashed (core reported a crash exit),
+ * and errored (a launch attempt failed). The renderer never assumes a state on its own —
+ * it derives everything from core events (`game.started`/`game.output`/`game.exit`) and
+ * periodic reconciliation against `listRunningInstances`.
  */
 /** One console line: the game's raw output (with its stream so the console can color
  * stderr/errors) or a launcher-originated message like "Launch failed: …". */
 export interface ConsoleLine {
   line: string;
   stream: "stdout" | "stderr";
+  /** Epoch ms at capture, so the console can render timestamps and crash diagnosis
+   * can look at the tail of the log with real ordering. */
+  timestamp: number;
 }
 
 interface LaunchState {
   launchingInstanceIds: Set<string>;
   runningInstanceIds: Set<string>;
+  stoppingInstanceIds: Set<string>;
+  crashedInstanceIds: Set<string>;
+  errorInstanceIds: Set<string>;
+  errorsByInstance: Record<string, string>;
+  crashInfoByInstance: Record<string, CrashInfo>;
   logsByInstance: Record<string, ConsoleLine[]>;
   markLaunching: (instanceId: string, launching: boolean) => void;
   markRunning: (instanceId: string, running: boolean) => void;
+  markStopping: (instanceId: string, stopping: boolean) => void;
+  markCrashed: (instanceId: string, info: CrashInfo) => void;
+  clearCrashed: (instanceId: string) => void;
+  markError: (instanceId: string, message: string) => void;
+  clearError: (instanceId: string) => void;
+  /** Resets every lifecycle flag for an instance (used after a retry or delete). */
+  clearLaunchState: (instanceId: string) => void;
   appendLog: (payload: GameOutputPayload) => void;
   /** Appends a launcher-originated line (e.g. a launch failure) to an instance's
    * console so errors the user must debug always appear there. */
@@ -42,6 +57,11 @@ function toggle(set: Set<string>, value: string, add: boolean): Set<string> {
 export const useLaunchStore = create<LaunchState>((set) => ({
   launchingInstanceIds: new Set(),
   runningInstanceIds: new Set(),
+  stoppingInstanceIds: new Set(),
+  crashedInstanceIds: new Set(),
+  errorInstanceIds: new Set(),
+  errorsByInstance: {},
+  crashInfoByInstance: {},
   logsByInstance: {},
   markLaunching: (instanceId, launching) =>
     set((state) => ({ launchingInstanceIds: toggle(state.launchingInstanceIds, instanceId, launching) })),
@@ -50,7 +70,59 @@ export const useLaunchStore = create<LaunchState>((set) => ({
       runningInstanceIds: toggle(state.runningInstanceIds, instanceId, running),
       // Any game event (started/output/exit) means the launching phase is over.
       launchingInstanceIds: toggle(state.launchingInstanceIds, instanceId, false),
+      // The process ended (or is gone) — clear any stale stop-in-flight flag.
+      stoppingInstanceIds: toggle(state.stoppingInstanceIds, instanceId, false),
     })),
+  markStopping: (instanceId, stopping) =>
+    set((state) => ({ stoppingInstanceIds: toggle(state.stoppingInstanceIds, instanceId, stopping) })),
+  markCrashed: (instanceId, info) =>
+    set((state) => ({
+      crashedInstanceIds: toggle(state.crashedInstanceIds, instanceId, true),
+      errorInstanceIds: toggle(state.errorInstanceIds, instanceId, false),
+      crashInfoByInstance: { ...state.crashInfoByInstance, [instanceId]: info },
+    })),
+  clearCrashed: (instanceId) =>
+    set((state) => {
+      const crashInfoByInstance = { ...state.crashInfoByInstance };
+      delete crashInfoByInstance[instanceId];
+      return {
+        crashedInstanceIds: toggle(state.crashedInstanceIds, instanceId, false),
+        crashInfoByInstance,
+      };
+    }),
+  markError: (instanceId, message) =>
+    set((state) => ({
+      errorInstanceIds: toggle(state.errorInstanceIds, instanceId, true),
+      errorsByInstance: { ...state.errorsByInstance, [instanceId]: message },
+    })),
+  clearError: (instanceId) =>
+    set((state) => {
+      const errorsByInstance = { ...state.errorsByInstance };
+      delete errorsByInstance[instanceId];
+      return {
+        errorInstanceIds: toggle(state.errorInstanceIds, instanceId, false),
+        errorsByInstance,
+      };
+    }),
+  clearLaunchState: (instanceId) =>
+    set((state) => {
+      const logsByInstance = { ...state.logsByInstance };
+      const crashInfoByInstance = { ...state.crashInfoByInstance };
+      const errorsByInstance = { ...state.errorsByInstance };
+      delete logsByInstance[instanceId];
+      delete crashInfoByInstance[instanceId];
+      delete errorsByInstance[instanceId];
+      return {
+        launchingInstanceIds: toggle(state.launchingInstanceIds, instanceId, false),
+        runningInstanceIds: toggle(state.runningInstanceIds, instanceId, false),
+        stoppingInstanceIds: toggle(state.stoppingInstanceIds, instanceId, false),
+        crashedInstanceIds: toggle(state.crashedInstanceIds, instanceId, false),
+        errorInstanceIds: toggle(state.errorInstanceIds, instanceId, false),
+        logsByInstance,
+        crashInfoByInstance,
+        errorsByInstance,
+      };
+    }),
   appendLog: (payload) =>
     set((state) => {
       const existing = state.logsByInstance[payload.instanceId] ?? [];
@@ -58,7 +130,10 @@ export const useLaunchStore = create<LaunchState>((set) => ({
       return {
         logsByInstance: {
           ...state.logsByInstance,
-          [payload.instanceId]: [...trimmed, { line: payload.line, stream: payload.stream }],
+          [payload.instanceId]: [
+            ...trimmed,
+            { line: payload.line, stream: payload.stream, timestamp: Date.now() },
+          ],
         },
       };
     }),
@@ -69,14 +144,21 @@ export const useLaunchStore = create<LaunchState>((set) => ({
       return {
         logsByInstance: {
           ...state.logsByInstance,
-          [instanceId]: [...trimmed, { line, stream: "stderr" }],
+          [instanceId]: [...trimmed, { line, stream: "stderr", timestamp: Date.now() }],
         },
       };
     }),
   clearLog: (instanceId) =>
     set((state) => ({ logsByInstance: { ...state.logsByInstance, [instanceId]: [] } })),
   kill: async (instanceId) => {
-    await window.noxara.killInstance(instanceId);
+    markStoppingInFlight(instanceId);
+    try {
+      await window.noxara.killInstance(instanceId);
+    } finally {
+      // game.exit clears the flag authoritatively; clear it here too so a missing
+      // event (kill of an already-dead process) never leaves the UI stuck on STOPPING.
+      useLaunchStore.getState().markStopping(instanceId, false);
+    }
     // The core kills the process and emits game.exit, which clears the running flag.
     // Optimistically clear BOTH running and launching now so the button flips back
     // instantly while the kill lands; game.exit reconciles the authoritative state.
@@ -106,6 +188,14 @@ export const useLaunchStore = create<LaunchState>((set) => ({
   },
 }));
 
+/** Sets the stop-in-flight flag outside zustand's set() so `kill` can await the IPC
+ * while still flipping the flag synchronously at the start. */
+function markStoppingInFlight(instanceId: string): void {
+  useLaunchStore.setState((state) => ({
+    stoppingInstanceIds: toggle(state.stoppingInstanceIds, instanceId, true),
+  }));
+}
+
 /** Shared launch helper used by every page that offers a Play button. Marks the
  * instance as launching for the whole IPC round-trip (which can take a while during
  * first-time file downloads); a later game.started/game.exit event settles the state.
@@ -120,6 +210,9 @@ export async function launchInstance(id: string, extraGameArgs?: string[]): Prom
     appendSystemLine(id, `[launcher] ${alreadyRunning.message}`);
     throw alreadyRunning;
   }
+  // A fresh launch retires any previous crash/error diagnosis for this instance.
+  useLaunchStore.getState().clearCrashed(id);
+  useLaunchStore.getState().clearError(id);
   markLaunching(id, true);
   try {
     await window.noxara.launchInstance(id, extraGameArgs);
@@ -134,6 +227,7 @@ export async function launchInstance(id: string, extraGameArgs?: string[]): Prom
     // Surface the failure in the instance's console so it's visible right where the
     // user would look for the error, not just as a toast.
     appendSystemLine(id, `[launcher] Launch failed: ${message}`);
+    useLaunchStore.getState().markError(id, message);
     throw e;
   }
 }

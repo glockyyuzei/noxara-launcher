@@ -276,7 +276,7 @@ async fn materialize_libraries(
 
     if !tasks.is_empty() {
         emit_progress(task_id, "libraries", format!("Downloading {} Forge librar{}…", tasks.len(), if tasks.len() == 1 { "y" } else { "ies" }));
-        let failed = download_batch(client, task_id, tasks, 8).await?;
+        let failed = download_batch(client, task_id, tasks, 8, 3, None).await?;
         if !failed.is_empty() {
             bail!("failed to download {} required Forge librar{}: {}", failed.len(), if failed.len() == 1 { "y" } else { "ies" }, failed.join(", "));
         }

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type {
   InstalledMod,
+  ModEnvironment,
   ModLoader,
   ModrinthSearchHit,
   ModSearchSort,
@@ -13,6 +14,8 @@ interface ModState {
   loader: ModLoader | "all";
   sort: ModSearchSort;
   gameVersion: string | "all";
+  category: string; // "all" | category slug
+  environment: ModEnvironment;
   hits: ModrinthSearchHit[];
   totalHits: number;
   offset: number;
@@ -29,6 +32,8 @@ interface ModState {
   setLoader: (l: ModLoader | "all") => void;
   setSort: (s: ModSearchSort) => void;
   setGameVersion: (v: string | "all") => void;
+  setCategory: (c: string) => void;
+  setEnvironment: (e: ModEnvironment) => void;
   search: (offset?: number) => Promise<void>;
   nextPage: () => Promise<void>;
   prevPage: () => Promise<void>;
@@ -46,6 +51,8 @@ export const useModStore = create<ModState>((set, get) => ({
   loader: "all",
   sort: "relevance",
   gameVersion: "all",
+  category: "all",
+  environment: "all",
   hits: [],
   totalHits: 0,
   offset: 0,
@@ -61,10 +68,12 @@ export const useModStore = create<ModState>((set, get) => ({
   setLoader: (loader) => set({ loader, offset: 0 }),
   setSort: (sort) => set({ sort, offset: 0 }),
   setGameVersion: (gameVersion) => set({ gameVersion, offset: 0 }),
+  setCategory: (category) => set({ category, offset: 0 }),
+  setEnvironment: (environment) => set({ environment, offset: 0 }),
 
   search: async (offsetOverride) => {
     const token = ++searchToken;
-    const { query, loader, sort, limit, gameVersion } = get();
+    const { query, loader, sort, limit, gameVersion, category, environment } = get();
     const offset = offsetOverride ?? get().offset;
     set({ searching: true, searchError: null, offset });
     try {
@@ -72,6 +81,8 @@ export const useModStore = create<ModState>((set, get) => ({
         query,
         loader: loader === "all" ? undefined : loader,
         gameVersion: gameVersion === "all" ? undefined : gameVersion,
+        category: category === "all" ? undefined : category,
+        environment,
         sort,
         limit,
         offset,

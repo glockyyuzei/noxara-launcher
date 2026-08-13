@@ -120,16 +120,19 @@ export default function ContentPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedInstance?.id, category]);
 
-  // For modpacks: check every installed pack for a newer published version so an
-  // "Update" action appears next to ones that have one.
+  // For modpacks / resource packs / shaders: check every installed item for a newer
+  // published version so an "Update" action appears next to ones that have one.
   useEffect(() => {
-    if (category !== "modpack" || !selectedInstance) {
+    if (!selectedInstance) {
       setPackUpdates([]);
       return;
     }
     let cancelled = false;
-    window.noxara
-      .checkModpackUpdates(selectedInstance.id)
+    const check =
+      category === "modpack"
+        ? window.noxara.checkModpackUpdates(selectedInstance.id)
+        : window.noxara.checkContentUpdates(selectedInstance.id, category);
+    check
       .then((updates) => {
         if (!cancelled) setPackUpdates(updates);
       })
@@ -172,10 +175,10 @@ export default function ContentPage({
     const key = `${contentId}:${versionId}`;
     setUpdatingKeys((prev) => new Set(prev).add(key));
     try {
-      await install(selectedInstance.id, "", versionId, "modpack");
-      toast.success("Modpack updated", `${name} was reinstalled at the latest version`);
+      await install(selectedInstance.id, "", versionId, category);
+      toast.success(`${singleName} updated`, `${name} was reinstalled at the latest version`);
     } catch (e) {
-      toast.error("Couldn't update modpack", e instanceof Error ? e.message : undefined);
+      toast.error(`Couldn't update ${singleName.toLowerCase()}`, e instanceof Error ? e.message : undefined);
     } finally {
       setUpdatingKeys((prev) => {
         const next = new Set(prev);
@@ -258,7 +261,7 @@ export default function ContentPage({
           ) : (
             <div className="space-y-1.5">
               {installed.map((item) => {
-                const update = category === "modpack" ? packUpdates.find((u) => u.contentId === item.id) : undefined;
+                const update = packUpdates.find((u) => u.contentId === item.id);
                 const updatingKey = update ? `${item.id}:${update.latestVersion.id}` : "";
                 const updating = updatingKeys.has(updatingKey);
                 return (

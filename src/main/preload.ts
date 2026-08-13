@@ -13,6 +13,7 @@ import type {
   ContentDownloadCompletePayload,
   ContentDownloadProgressPayload,
   CreateInstanceInput,
+  UpdateInstanceInput,
   DownloadCompletePayload,
   DownloadProgressPayload,
   DownloadTaskInfo,
@@ -43,9 +44,19 @@ const api = {
 
   listInstances: () => ipcRenderer.invoke(IPC_CHANNELS.listInstances),
   createInstance: (input: CreateInstanceInput) => ipcRenderer.invoke(IPC_CHANNELS.createInstance, input),
+  updateInstance: (id: string, patch: UpdateInstanceInput) => ipcRenderer.invoke(IPC_CHANNELS.updateInstance, id, patch),
   deleteInstance: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteInstance, id),
   duplicateInstance: (id: string, newName: string) => ipcRenderer.invoke(IPC_CHANNELS.duplicateInstance, id, newName),
   openInstanceFolder: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.openInstanceFolder, id),
+
+  listBackups: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.listBackups, instanceId),
+  createBackup: (instanceId: string, label: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.createBackup, instanceId, label),
+  restoreBackup: (backupId: string) => ipcRenderer.invoke(IPC_CHANNELS.restoreBackup, backupId),
+  deleteBackup: (backupId: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteBackup, backupId),
+
+  getStorageBreakdown: () => ipcRenderer.invoke(IPC_CHANNELS.getStorageBreakdown),
+  clearStorageCache: (categoryId: string) => ipcRenderer.invoke(IPC_CHANNELS.clearStorageCache, categoryId),
 
   listAccounts: () => ipcRenderer.invoke(IPC_CHANNELS.listAccounts),
   createOfflineProfile: (username: string) => ipcRenderer.invoke(IPC_CHANNELS.createOfflineProfile, username),
@@ -70,6 +81,7 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.getQuiltLoaderVersions, mcVersion, forceRefresh),
 
   searchMods: (query: ModSearchQuery) => ipcRenderer.invoke(IPC_CHANNELS.searchMods, query),
+  getModCategories: () => ipcRenderer.invoke(IPC_CHANNELS.getModCategories),
   getModVersions: (projectId: string, loader?: ModLoader, gameVersion?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.getModVersions, projectId, loader, gameVersion),
   installMod: (instanceId: string, projectId: string, versionId: string) =>
@@ -89,6 +101,8 @@ const api = {
   setContentEnabled: (instanceId: string, itemId: string, category: ContentCategory, enabled: boolean) =>
     ipcRenderer.invoke(IPC_CHANNELS.setContentEnabled, instanceId, itemId, category, enabled),
   checkModpackUpdates: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.checkModpackUpdates, instanceId),
+  checkContentUpdates: (instanceId: string, category: ContentCategory) =>
+    ipcRenderer.invoke(IPC_CHANNELS.checkContentUpdates, instanceId, category),
 
   pickModpackFile: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.pickModpackFile),
   importModpackFromFile: (mrpackPath: string, input: ModpackImportInput) =>
@@ -124,6 +138,7 @@ const api = {
   setSettings: (partial: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.setSettings, partial),
   pickFolder: (title: string) => ipcRenderer.invoke(IPC_CHANNELS.pickFolder, title),
   pickJavaExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.pickJavaExecutable),
+  openDataDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.openDataDirectory),
 
   listSkins: () => ipcRenderer.invoke(IPC_CHANNELS.listSkins),
   uploadSkin: (name: string, base64Png: string, model: "classic" | "slim") =>

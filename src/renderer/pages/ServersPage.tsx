@@ -200,6 +200,7 @@ export default function ServersPage() {
                       {server.address}
                       {server.port !== 25565 ? `:${server.port}` : ""}
                     </div>
+                    <ServerStatus status={statusById[server.id]} />
                   </div>
                   <span className="hidden sm:inline-flex text-[10px] px-2 py-0.5 rounded-full bg-noxara-elevated border border-noxara-border text-noxara-subtle capitalize shrink-0">
                     {instanceName(server.instanceId)}
@@ -262,6 +263,37 @@ export default function ServersPage() {
         />
       )}
     </div>
+  );
+}
+
+/** Compact status line under each server: online (with players + latency when the
+ * server answered the ping), offline, or unknown while the first probe is in flight. */
+function ServerStatus({ status }: { status: ServerPingResult | undefined }) {
+  if (!status) {
+    return (
+      <span className="flex items-center gap-1.5 text-[11px] text-noxara-muted mt-1">
+        <span className="w-1.5 h-1.5 rounded-full bg-noxara-muted/60" /> Checking…
+      </span>
+    );
+  }
+  if (status.online) {
+    const players =
+      status.playersOnline !== null && status.playersMax !== null
+        ? `${status.playersOnline}/${status.playersMax} players`
+        : null;
+    const latency = status.latencyMs !== null ? `${status.latencyMs} ms` : null;
+    return (
+      <span className="flex items-center gap-1.5 text-[11px] text-noxara-success mt-1">
+        <span className="w-1.5 h-1.5 rounded-full bg-noxara-success" />
+        Online{players ? <span className="text-noxara-muted">· {players}</span> : null}
+        {latency ? <span className="text-noxara-muted">· {latency}</span> : null}
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1.5 text-[11px] text-noxara-muted mt-1">
+      <span className="w-1.5 h-1.5 rounded-full bg-noxara-muted/60" /> Offline
+    </span>
   );
 }
 

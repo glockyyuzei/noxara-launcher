@@ -1,16 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Loader2, AlertCircle } from "lucide-react";
-import type {
-  CreateInstanceInput,
-  InstanceRecord,
-  VersionManifestEntry,
-  ForgeVersion,
-  FabricLoaderVersion,
-  NeoForgeVersion,
-  QuiltLoaderVersion,
-} from "@shared/types/ipc";
-
-const LOADERS: CreateInstanceInput["loader"][] = ["vanilla", "fabric", "forge", "neoforge", "quilt"];
+import { Check, Loader2, AlertCircle, RotateCcw } from "lucide-react";
+import type { CreateInstanceInput, InstanceRecord, VersionManifestEntry } from "@shared/types/ipc";
+import { LOADERS, fetchLoaderVersions, preferredLoaderVersion, type LoaderId } from "../lib/loaders";
 
 export function CreateInstanceWizard({
   onClose,
@@ -24,10 +15,11 @@ export function CreateInstanceWizard({
   const [versions, setVersions] = useState<VersionManifestEntry[]>([]);
   const [showSnapshots, setShowSnapshots] = useState(false);
   const [minecraftVersion, setMinecraftVersion] = useState<string | null>(null);
-  const [loader, setLoader] = useState<CreateInstanceInput["loader"]>("vanilla");
+  const [loader, setLoader] = useState<LoaderId>("vanilla");
   const [loaderVersions, setLoaderVersions] = useState<{ version: string; display: string; tag: string }[]>([]);
   const [loaderVersionsLoading, setLoaderVersionsLoading] = useState(false);
   const [loaderVersionsError, setLoaderVersionsError] = useState<string | null>(null);
+  const [loaderVersionReloadKey, setLoaderVersionReloadKey] = useState(0);
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
   const [minRam, setMinRam] = useState(2048);
   const [maxRam, setMaxRam] = useState(4096);
@@ -52,8 +44,7 @@ export function CreateInstanceWizard({
   }, []);
 
   // Fetch real, currently-published loader builds for whichever Minecraft version is
-  // selected. All four loaders share a picker: Fabric/Quilt list Loader builds by
-  // version, Forge/NeoForge list builds by "<mc>-<loader>" full version. The newest
+  // selected. All four loaders share the unified registry in lib/loaders.ts. The newest
   // stable (or tagged "recommended"/"latest") build is pre-selected; switching
   // Minecraft versions re-fetches compatible builds. None of this is hardcoded.
   useEffect(() => {
@@ -63,39 +54,11 @@ export function CreateInstanceWizard({
     setLoaderVersionsError(null);
     setLoaderVersions([]);
     setSelectedVersion(null);
-    const request =
-      loader === "fabric"
-        ? window.noxara.getFabricLoaderVersions(minecraftVersion)
-        : loader === "quilt"
-          ? window.noxara.getQuiltLoaderVersions(minecraftVersion)
-          : loader === "forge"
-            ? window.noxara.getForgeVersions(minecraftVersion)
-            : window.noxara.getNeoForgeVersions(minecraftVersion);
-    request
-      .then((list) => {
+    fetchLoaderVersions(loader, minecraftVersion)
+      .then((items) => {
         if (cancelled) return;
-        const isForgeStyle = loader === "forge" || loader === "neoforge";
-        const items = (list as unknown as Array<ForgeVersion | FabricLoaderVersion>).map((v) => {
-          if (isForgeStyle) {
-            const f = v as ForgeVersion;
-            return {
-              version: f.fullVersion,
-              display: f.forgeVersion,
-              tag: f.recommended ? "Recommended" : f.latest ? "Latest" : "",
-            };
-          }
-          const l = v as FabricLoaderVersion;
-          return {
-            version: l.version,
-            display: l.version,
-            tag: l.stable ? "Recommended" : "",
-          };
-        });
-        const preferred =
-          items.find((v) => (isForgeStyle ? v.tag === "Recommended" || v.tag === "Latest" : v.tag === "Recommended")) ??
-          items[0];
         setLoaderVersions(items);
-        setSelectedVersion(preferred?.version ?? null);
+        setSelectedVersion(preferredLoaderVersion(items));
       })
       .catch((e) => {
         if (cancelled) return;
@@ -107,7 +70,7 @@ export function CreateInstanceWizard({
     return () => {
       cancelled = true;
     };
-  }, [loader, minecraftVersion]);
+  }, [loader, minecraftVersion, loaderVersionReloadKey]);
 
   const visibleVersions = useMemo(
     () => versions.filter((v) => showSnapshots || v.type === "release").slice(0, 100),
@@ -200,16 +163,16 @@ export function CreateInstanceWizard({
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
                 {LOADERS.map((l) => (
                   <button
-                    key={l}
-                    onClick={() => setLoader(l)}
-                    className={`yz-card px-3 py-3 text-sm capitalize transition-all duration-150 flex items-center justify-center gap-1.5 ${
-                      loader === l
+                    key={l.id}
+                    onClick={() => setLoader(l.id)}
+                    className={`yz-card px-3 py-3 text-sm transition-all duration-150 flex items-center justify-center gap-1.5 ${
+                      loader === l.id
                         ? "border-noxara-white text-noxara-white"
                         : "text-noxara-subtle hover:border-noxara-border-strong"
                     }`}
                   >
-                    {l}
-                    {loader === l && <Check size={13} strokeWidth={2.5} />}
+                    {l.name}
+                    {loader === l.id && <Check size={13} strokeWidth={2.5} />}
                   </button>
                 ))}
               </div>
@@ -238,7 +201,15 @@ export function CreateInstanceWizard({
                   {loaderVersionsError && (
                     <div className="text-sm text-noxara-error px-3 py-3 border border-noxara-border rounded flex items-start gap-2">
                       <AlertCircle size={14} className="shrink-0 mt-0.5" />
-                      {loaderVersionsError}
+                      <span className="flex-1">{loaderVersionsError}</span>
+                      <button
+                        onClick={() => setLoaderVersionReloadKey((k) => k + 1)}
+                        className="text-noxara-muted hover:text-noxara-text flex items-center gap-1 shrink-0"
+                        title="Try again"
+                      >
+                        <RotateCcw size={13} />
+                        Retry
+                      </button>
                     </div>
                   )}
                   {!loaderVersionsLoading && !loaderVersionsError && loaderVersions.length > 0 && (

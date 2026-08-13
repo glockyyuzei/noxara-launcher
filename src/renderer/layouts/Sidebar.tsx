@@ -12,6 +12,7 @@ import {
   Shirt,
   Coffee,
   Download,
+  HardDrive,
   Settings,
   ChevronsLeft,
   ChevronsRight,
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
   { to: "/skins", label: "Skins", icon: Shirt, end: false, section: "Account" },
   { to: "/java", label: "Java", icon: Coffee, end: false, section: "System" },
   { to: "/downloads", label: "Downloads", icon: Download, end: false, section: "System" },
+  { to: "/storage", label: "Storage", icon: HardDrive, end: false, section: "System" },
   { to: "/settings", label: "Settings", icon: Settings, end: false, section: "System" },
 ] as const;
 

@@ -2,16 +2,58 @@
 //! libraries, assets, and loader installers. Verifies sha1 hashes and skips files
 //! that already pass verification (spec sections 78/79: don't redownload, cache
 //! metadata, use checksums).
+//!
+//! Cancellation: any batch can be cancelled by task id via `mark_cancelled`. The
+//! batch checks the flag between files, each in-flight download checks it per-chunk,
+//! and a cancelled download deletes its own partial `.part` file so no corrupted
+//! half-written file is left behind looking valid. A cancelled batch returns a
+//! `DownloadCancelled` error (RPC code "cancelled") so the Electron side can mark the
+//! activity cancelled instead of failed.
 
 use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use serde::Serialize;
 use sha1::{Digest, Sha1};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::protocol::write_event;
+
+/// Marker error reported to the Electron side as RPC code "cancelled".
+#[derive(Debug, Clone, Copy)]
+pub struct DownloadCancelled;
+
+impl std::fmt::Display for DownloadCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "download cancelled")
+    }
+}
+
+impl std::error::Error for DownloadCancelled {}
+
+fn cancelled_registry() -> &'static Mutex<HashSet<String>> {
+    static REGISTRY: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// Requests cancellation of any in-flight batch sharing `task_id`.
+pub fn mark_cancelled(task_id: &str) {
+    if let Ok(mut set) = cancelled_registry().lock() {
+        set.insert(task_id.to_string());
+    }
+}
+
+fn is_cancelled(task_id: &str) -> bool {
+    cancelled_registry().lock().map(|g| g.contains(task_id)).unwrap_or(false)
+}
+
+fn clear_cancelled(task_id: &str) {
+    if let Ok(mut set) = cancelled_registry().lock() {
+        set.remove(task_id);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct DownloadTask {
@@ -56,11 +98,25 @@ pub async fn download_batch(
     task_id: &str,
     tasks: Vec<DownloadTask>,
     max_concurrency: usize,
+    max_attempts: u32,
+    request_timeout: Option<std::time::Duration>,
 ) -> Result<Vec<String>> {
     let file_count = tasks.len();
     let downloaded_bytes = Arc::new(AtomicU64::new(0));
     let total_bytes: u64 = tasks.iter().filter_map(|t| t.size).sum();
     let failed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+    // Cancelled before any work started? Report immediately.
+    if is_cancelled(task_id) {
+        write_event(
+            "download.complete",
+            DownloadCompleteEvent {
+                task_id: task_id.to_string(),
+                failed: vec![],
+            },
+        );
+        return Err(anyhow::Error::new(DownloadCancelled));
+    }
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1)));
     let mut handles = Vec::with_capacity(tasks.len());
@@ -74,6 +130,9 @@ pub async fn download_batch(
 
         let handle = tokio::spawn(async move {
             let _permit = semaphore.acquire_owned().await.unwrap();
+            if is_cancelled(&task_id) {
+                return;
+            }
 
             // Skip re-download if a valid copy already exists. An empty sha1 means the
             // source didn't publish one (e.g. some Fabric libraries) — we still skip if
@@ -102,26 +161,32 @@ pub async fn download_batch(
 
             // Transient network hiccups (timeouts, resets) shouldn't permanently fail a
             // file after one bad attempt — retry a couple of times with a short backoff
-            // before giving up on it.
-            const MAX_ATTEMPTS: u32 = 3;
+            // before giving up on it. A cancellation aborts the retry loop immediately.
+            let attempts = max_attempts.max(1);
             let mut last_err = None;
-            for attempt in 1..=MAX_ATTEMPTS {
-                match download_single(&client, &task, &downloaded_bytes, total_bytes, &task_id, index, file_count).await {
+            for attempt in 1..=attempts {
+                if is_cancelled(&task_id) {
+                    break;
+                }
+                match download_single(&client, &task, &downloaded_bytes, total_bytes, &task_id, index, file_count, request_timeout).await {
                     Ok(()) => {
                         last_err = None;
                         break;
                     }
                     Err(e) => {
-                        tracing::warn!("download attempt {attempt}/{MAX_ATTEMPTS} failed for {}: {e:#}", task.label);
+                        if e.downcast_ref::<DownloadCancelled>().is_some() {
+                            break;
+                        }
+                        tracing::warn!("download attempt {attempt}/{attempts} failed for {}: {e:#}", task.label);
                         last_err = Some(e);
-                        if attempt < MAX_ATTEMPTS {
+                        if attempt < attempts {
                             tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
                         }
                     }
                 }
             }
             if let Some(e) = last_err {
-                tracing::warn!("download permanently failed for {} after {MAX_ATTEMPTS} attempts: {e:#}", task.label);
+                tracing::warn!("download permanently failed for {} after {attempts} attempts: {e:#}", task.label);
                 failed.lock().unwrap().push(task.label.clone());
             }
         });
@@ -132,6 +197,7 @@ pub async fn download_batch(
         let _ = h.await;
     }
 
+    let cancelled = is_cancelled(task_id);
     let failed_list = failed.lock().unwrap().clone();
     write_event(
         "download.complete",
@@ -140,6 +206,12 @@ pub async fn download_batch(
             failed: failed_list.clone(),
         },
     );
+    // Clear the flag on both terminal paths so the registry stays bounded; task ids are
+    // per-operation UUIDs so a reused id is essentially impossible.
+    clear_cancelled(task_id);
+    if cancelled {
+        return Err(anyhow::Error::new(DownloadCancelled));
+    }
     Ok(failed_list)
 }
 
@@ -151,25 +223,40 @@ async fn download_single(
     task_id: &str,
     index: usize,
     file_count: usize,
+    request_timeout: Option<std::time::Duration>,
 ) -> Result<()> {
     if let Some(parent) = task.dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    let resp = client
-        .get(&task.url)
+    let tmp_path = task.dest.with_extension("part");
+    if is_cancelled(task_id) {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(anyhow::Error::new(DownloadCancelled));
+    }
+
+    let mut builder = client.get(&task.url);
+    if let Some(t) = request_timeout {
+        builder = builder.timeout(t);
+    }
+    let resp = builder
         .send()
         .await
         .with_context(|| format!("request failed for {}", task.url))?
         .error_for_status()
         .with_context(|| format!("server returned an error for {}", task.url))?;
 
-    let tmp_path = task.dest.with_extension("part");
     let mut file = tokio::fs::File::create(&tmp_path).await?;
     let mut stream = resp.bytes_stream();
 
     use tokio::io::AsyncWriteExt;
     while let Some(chunk) = stream.next().await {
+        if is_cancelled(task_id) {
+            // A cancelled download must not leave a corrupted half-written file behind.
+            drop(file);
+            let _ = tokio::fs::remove_file(&tmp_path).await;
+            return Err(anyhow::Error::new(DownloadCancelled));
+        }
         let chunk = chunk?;
         file.write_all(&chunk).await?;
         let now = downloaded_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
@@ -187,6 +274,11 @@ async fn download_single(
     }
     file.flush().await?;
     drop(file);
+
+    if is_cancelled(task_id) {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(anyhow::Error::new(DownloadCancelled));
+    }
 
     if let Some(expected) = &task.sha1 {
         if !expected.is_empty() && !sha1_matches(&tmp_path, expected) {

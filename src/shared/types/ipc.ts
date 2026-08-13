@@ -42,6 +42,26 @@ export interface CreateInstanceInput {
   iconPath?: string | null;
 }
 
+/** A snapshot of an instance's folder, restorable onto the same instance later. */
+export interface BackupRecord {
+  id: string;
+  instanceId: string;
+  label: string;
+  /** Absolute path to the `.zip` archive on disk. */
+  path: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+/** Mutable per-instance settings (everything else is immutable once created). */
+export interface UpdateInstanceInput {
+  name?: string;
+  /** Absolute path to a pinned Java executable, or null to revert to auto-detection. */
+  javaPath?: string | null;
+  minRamMb?: number;
+  maxRamMb?: number;
+}
+
 export interface AccountRecord {
   id: string;
   kind: "microsoft" | "offline";
@@ -198,6 +218,17 @@ export interface ModrinthSearchResult {
 
 export type ModSearchSort = "relevance" | "downloads" | "newest" | "updated";
 
+/** Where a mod is allowed to run. Maps to Modrinth's client_side/server_side facets. */
+export type ModEnvironment = "all" | "client" | "server" | "both";
+
+/** A Modrinth project category (e.g. "performance", "technology"), from /tag/category. */
+export interface ModrinthCategory {
+  name: string;
+  slug: string;
+  /** Modrinth's category icon URL. */
+  icon: string;
+}
+
 export interface ModSearchQuery {
   query: string;
   loader?: ModLoader;
@@ -207,6 +238,10 @@ export interface ModSearchQuery {
   limit?: number;
   /** Which Modrinth project type to search for. Defaults to "mod". */
   projectType?: "mod" | ContentCategory;
+  /** Single category slug (e.g. "performance") to narrow results to. */
+  category?: string;
+  /** Environment (client/server) filter. */
+  environment?: ModEnvironment;
 }
 
 export interface ModrinthVersionFile {
@@ -291,6 +326,8 @@ export interface ContentSearchQuery {
   sort?: ModSearchSort;
   offset?: number;
   limit?: number;
+  category?: string;
+  environment?: ModEnvironment;
 }
 
 export interface InstalledContent {
@@ -451,6 +488,40 @@ export interface InstanceHealthReport {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Instance lifecycle + crash detection                                       */
+/* -------------------------------------------------------------------------- */
+
+/** The real lifecycle state of an instance, derived from backend signals (launch
+ * events, the process registry, and the global activity manager). The UI reacts to
+ * this instead of assuming "Play" vs "not Play". */
+export type InstanceState =
+  | "READY"
+  | "CREATING"
+  | "DOWNLOADING"
+  | "INSTALLING"
+  | "LAUNCHING"
+  | "RUNNING"
+  | "STOPPING"
+  | "CRASHED"
+  | "ERROR";
+
+/** Deterministic crash diagnosis attached to an instance after the game exits
+ * unexpectedly. `reason`/`hint` are user-facing; `patternId` is a stable key for
+ * debugging and future automation. */
+export interface CrashInfo {
+  exitCode: number | null;
+  /** User-facing explanation ("Minecraft stopped unexpectedly."). */
+  reason: string;
+  /** Suggested next step ("Increase allocated RAM in the instance settings."). */
+  hint: string;
+  /** Stable pattern id, e.g. "out_of_memory" | "missing_dependency" | ... */
+  patternId: string;
+  /** Matched technical detail (exception class / message) for the log viewer. */
+  detail?: string;
+  occurredAt: string;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Mod dependencies (Modrinth)                                                */
 /* -------------------------------------------------------------------------- */
 
@@ -471,8 +542,10 @@ export interface ModDependenciesResult {
   present: Array<{ dependency: ModDependency; installed: boolean }>;
   /** Required dependencies that are missing and would need installing. */
   missing: ModDependency[];
-  /** Incompatible with the current instance loader/game version. */
-  incompatible: ModDependency[];
+  /** Dependencies that conflict with this mod; `installed` is true when the conflict
+   * is real (the project is already installed in this instance) and the UI should
+   * block the install rather than just inform. */
+  incompatible: Array<{ dependency: ModDependency; installed: boolean }>;
   optional: ModDependency[];
 }
 
@@ -518,6 +591,30 @@ export interface ServerInput {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Storage management                                                         */
+/* -------------------------------------------------------------------------- */
+
+export interface StorageCategory {
+  id: string;
+  label: string;
+  /** Absolute path this category covers (display + clear target). */
+  path: string;
+  sizeBytes: number;
+  /** True when the data is regenerable (caches/temp) and safe to wipe. */
+  clearable: boolean;
+  /** One-line explanation shown in the UI. */
+  hint: string;
+}
+
+export interface StorageBreakdown {
+  categories: StorageCategory[];
+  totalBytes: number;
+  /** Free / total bytes on the volume hosting the launcher data. */
+  diskFreeBytes: number;
+  diskTotalBytes: number;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Settings                                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -538,6 +635,32 @@ export interface LauncherSettings {
   startMinimized: boolean;
   showSnapshots: boolean;
   maxConcurrentDownloads: number;
+
+  /* General */
+  /** Register Noxara to start when the user signs in to Windows. */
+  startOnBoot: boolean;
+  /** Minimize to the system tray instead of the taskbar when the window is minimized. */
+  minimizeToTray: boolean;
+  /** Ask for confirmation before closing the window while instances are running. */
+  confirmBeforeCloseRunningInstances: boolean;
+
+  /* Appearance */
+  /** Root font-size multiplier (0.9 / 1 / 1.1 / 1.25). Applied as a CSS scale. */
+  uiScale: number;
+  /** Tighter paddings/gaps across the UI. */
+  compactMode: boolean;
+  /** Enables CSS transitions/animations. */
+  uiAnimations: boolean;
+
+  /* Downloads */
+  /** Per-file retry attempts for batch downloads (1..5). */
+  downloadRetryCount: number;
+  /** Per-file request timeout in seconds for batch downloads (30..600). */
+  downloadTimeoutSec: number;
+
+  /* Advanced */
+  /** Verbose noxara-core logging (applied on the next core restart). */
+  debugMode: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -579,9 +702,21 @@ export interface NoxaraApi {
   // Instances
   listInstances(): Promise<InstanceRecord[]>;
   createInstance(input: CreateInstanceInput): Promise<InstanceRecord>;
+  updateInstance(id: string, patch: UpdateInstanceInput): Promise<InstanceRecord>;
   deleteInstance(id: string): Promise<void>;
   duplicateInstance(id: string, newName: string): Promise<InstanceRecord>;
   openInstanceFolder(id: string): Promise<void>;
+
+  // Instance backups
+  listBackups(instanceId: string): Promise<BackupRecord[]>;
+  createBackup(instanceId: string, label: string): Promise<BackupRecord>;
+  restoreBackup(backupId: string): Promise<void>;
+  deleteBackup(backupId: string): Promise<void>;
+
+  // Storage management
+  getStorageBreakdown(): Promise<StorageBreakdown>;
+  /** Clears a clearable storage category and returns the fresh breakdown. */
+  clearStorageCache(categoryId: string): Promise<StorageBreakdown>;
 
   // Accounts
   listAccounts(): Promise<AccountRecord[]>;
@@ -618,6 +753,7 @@ export interface NoxaraApi {
 
   // Mods (Modrinth)
   searchMods(query: ModSearchQuery): Promise<ModrinthSearchResult>;
+  getModCategories(): Promise<ModrinthCategory[]>;
   getModVersions(projectId: string, loader?: ModLoader, gameVersion?: string): Promise<ModrinthVersion[]>;
   installMod(instanceId: string, projectId: string, versionId: string): Promise<InstalledMod>;
   listInstalledMods(instanceId: string): Promise<InstalledMod[]>;
@@ -633,6 +769,8 @@ export interface NoxaraApi {
   removeContent(instanceId: string, itemId: string, category: ContentCategory): Promise<void>;
   setContentEnabled(instanceId: string, itemId: string, category: ContentCategory, enabled: boolean): Promise<void>;
   checkModpackUpdates(instanceId: string): Promise<ModpackUpdateInfo[]>;
+  /** Checks installed resource packs / shaders for a newer published version. */
+  checkContentUpdates(instanceId: string, category: ContentCategory): Promise<ModpackUpdateInfo[]>;
 
   // Modpacks (import/export .mrpack files)
   pickModpackFile(): Promise<string | null>;
@@ -697,9 +835,16 @@ export const IPC_CHANNELS = {
   ensureJavaRuntime: "noxara:java:ensureRuntime",
   listInstances: "noxara:instances:list",
   createInstance: "noxara:instances:create",
+  updateInstance: "noxara:instances:update",
   deleteInstance: "noxara:instances:delete",
   duplicateInstance: "noxara:instances:duplicate",
   openInstanceFolder: "noxara:instances:openFolder",
+  listBackups: "noxara:backups:list",
+  createBackup: "noxara:backups:create",
+  restoreBackup: "noxara:backups:restore",
+  deleteBackup: "noxara:backups:delete",
+  getStorageBreakdown: "noxara:storage:breakdown",
+  clearStorageCache: "noxara:storage:clear",
   listAccounts: "noxara:accounts:list",
   createOfflineProfile: "noxara:accounts:createOffline",
   setActiveAccount: "noxara:accounts:setActive",
@@ -714,6 +859,7 @@ export const IPC_CHANNELS = {
   getFabricLoaderVersions: "noxara:fabric:getLoaderVersions",
   getQuiltLoaderVersions: "noxara:quilt:getLoaderVersions",
   searchMods: "noxara:mods:search",
+  getModCategories: "noxara:mods:getCategories",
   getModVersions: "noxara:mods:getVersions",
   installMod: "noxara:mods:install",
   listInstalledMods: "noxara:mods:listInstalled",
@@ -725,6 +871,7 @@ export const IPC_CHANNELS = {
   removeContent: "noxara:content:remove",
   setContentEnabled: "noxara:content:setEnabled",
   checkModpackUpdates: "noxara:content:checkModpackUpdates",
+  checkContentUpdates: "noxara:content:checkContentUpdates",
   pickModpackFile: "noxara:modpacks:pickFile",
   importModpackFromFile: "noxara:modpacks:import",
   pickModpackSavePath: "noxara:modpacks:pickSavePath",
@@ -748,6 +895,7 @@ export const IPC_CHANNELS = {
   setSettings: "noxara:settings:set",
   pickFolder: "noxara:shell:pickFolder",
   pickJavaExecutable: "noxara:shell:pickJavaExecutable",
+  openDataDirectory: "noxara:shell:openDataDirectory",
   listRunningInstances: "noxara:launch:running",
   killInstance: "noxara:launch:kill",
   listSkins: "noxara:skins:list",

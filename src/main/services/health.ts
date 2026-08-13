@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { coreBridge } from "./core-bridge";
+import { coreBridge, type CoreBridgeError } from "./core-bridge";
 import { getInstanceDirById, listInstances } from "./instances";
 import { getSettings } from "./settings";
 import { detectJava } from "./java";
@@ -25,7 +25,7 @@ import { getFabricVersionDetail } from "./fabric";
 import { getQuiltVersionDetail } from "./quilt";
 import { listInstalledMods, getModDependencies, redownloadMissingModFiles, installMissingDependencies } from "./mods";
 import { checkModUpdates } from "./mods";
-import { startActivity, progressActivity, succeedActivity, failActivity } from "./activity";
+import { startActivity, updateActivity, progressActivity, succeedActivity, failActivity } from "./activity";
 import type {
   InstanceHealthCheck,
   InstanceHealthReport,
@@ -258,7 +258,13 @@ export async function repairInstance(instanceId: string): Promise<InstanceHealth
     instanceId: instance.id,
     description: "Repairing instance",
     status: "repairing",
+    control: {
+      cancel: async () => {
+        await coreBridge.call("downloads.cancel", { taskId: activityId }).catch(() => undefined);
+      },
+    },
   });
+  updateActivity(activityId, { cancellable: true });
 
   try {
     // 1. Re-download client + libraries + assets (batch events feed the activity).
@@ -284,7 +290,9 @@ export async function repairInstance(instanceId: string): Promise<InstanceHealth
           : "Repair finished — everything was already in place",
     });
   } catch (err) {
-    failActivity(activityId, err instanceof Error ? err.message : "Repair failed");
+    if (!(err instanceof Error && (err as CoreBridgeError).code === "cancelled")) {
+      failActivity(activityId, err instanceof Error ? err.message : "Repair failed");
+    }
     throw err;
   }
 

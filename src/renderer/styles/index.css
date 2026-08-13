@@ -139,3 +139,51 @@
     transition-duration: 0.001ms !important;
   }
 }
+
+/* Settings → Appearance → Compact mode (applied as a class on <html>). Tighter
+   page/card padding so more content fits on screen. Scoped to the layout classes
+   this app actually uses. */
+.noxara-compact .p-3 {
+  padding: 0.375rem !important;
+}
+.noxara-compact .p-4 {
+  padding: 0.5rem !important;
+}
+.noxara-compact .p-5 {
+  padding: 0.625rem !important;
+}
+.noxara-compact .p-6 {
+  padding: 0.75rem !important;
+}
+.noxara-compact .px-4 {
+  padding-left: 0.75rem !important;
+  padding-right: 0.75rem !important;
+}
+.noxara-compact .px-5 {
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
+}
+.noxara-compact .px-6 {
+  padding-left: 1rem !important;
+  padding-right: 1rem !important;
+}
+.noxara-compact .py-3 {
+  padding-top: 0.5rem !important;
+  padding-bottom: 0.5rem !important;
+}
+.noxara-compact .py-3\.5 {
+  padding-top: 0.625rem !important;
+  padding-bottom: 0.625rem !important;
+}
+.noxara-compact .py-4 {
+  padding-top: 0.5rem !important;
+  padding-bottom: 0.5rem !important;
+}
+
+/* Settings → Appearance → UI animations off (applied as a class on <html>). */
+.noxara-no-anim *,
+.noxara-no-anim *::before,
+.noxara-no-anim *::after {
+  animation: none !important;
+  transition: none !important;
+}

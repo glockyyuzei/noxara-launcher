@@ -5,6 +5,11 @@
 //! versions):
 //!   * every meta request gets its own short per-request timeout (the shared client
 //!     timeout exists for large downloads and is far too generous for a tiny JSON doc),
+//!   * the per-attempt timeout and MAX_ATTEMPTS are budgeted together so the worst-case
+//!     total (3 × 10s + backoff ≈ 31s) fits comfortably inside the Electron bridge's
+//!     per-call timeout. If the budget exceeded the bridge timeout, a slow (but
+//!     non-fatal) API would surface as a spurious "noxara-core call ... timed out"
+//!     even though Rust was still legitimately retrying — that was the old bug,
 //!   * transient failures (connect errors, timeouts, 5xx) are retried with a short
 //!     exponential backoff instead of failing the whole RPC on the first hiccup,
 //!   * 4xx responses are treated as permanent (e.g. a bogus loader/game-version pair)
@@ -156,7 +161,11 @@ pub async fn get_loader_versions(client: &reqwest::Client, game_version: &str) -
         async move {
         let resp = client
             .get(&url)
-            .timeout(Duration::from_secs(30)) // tiny JSON doc — a hung one is a degraded API
+            // Tiny JSON doc — a hung one is a degraded API. 10s per attempt keeps the
+            // whole retry budget (3×10s + backoff ≈ 31s) under the Electron bridge's
+            // per-call timeout so a slow API returns a real network_error instead of a
+            // spurious bridge "timed out".
+            .timeout(Duration::from_secs(10))
             .send()
             .await
             .context("failed to reach Fabric meta API")?
@@ -227,7 +236,7 @@ pub async fn build_fabric_version_detail(
         async move {
         let resp = client
             .get(&url)
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(10)) // budgeted with MAX_ATTEMPTS to fit the bridge timeout
             .send()
             .await
             .context("failed to reach Fabric meta API for profile json")?

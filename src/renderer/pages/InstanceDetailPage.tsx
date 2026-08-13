@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Play,
@@ -17,16 +17,24 @@ import {
   XCircle,
   Wrench,
   Terminal,
+  Archive,
+  Plus,
+  Download,
 } from "lucide-react";
-import type { InstanceHealthReport, InstanceHealthCheck, InstanceRecord, ModrinthSearchHit } from "@shared/types/ipc";
+import type { BackupRecord, InstanceHealthReport, InstanceHealthCheck, InstanceRecord, JavaInstallation, ModrinthSearchHit } from "@shared/types/ipc";
 import { useLaunchStore, launchInstance } from "../stores/useLaunchStore";
+import { useInstanceState } from "../stores/useInstanceState";
 import type { ConsoleLine } from "../stores/useLaunchStore";
 import { useModStore } from "../stores/useModStore";
 import { InstanceCover } from "../components/InstanceCover";
 import { ModDetailsModal } from "../components/ModDetailsModal";
+import { CrashBanner } from "../components/CrashBanner";
+import { InstanceStateBadge } from "../components/InstanceStateBadge";
+import { friendlyErrorMessage } from "../lib/coreErrors";
+import { formatBytes } from "../utils/format";
 import { toast } from "../stores/useToastStore";
 
-const TABS = ["Overview", "Mods", "Console"] as const;
+const TABS = ["Overview", "Mods", "Backups", "Console"] as const;
 
 export default function InstanceDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -36,13 +44,25 @@ export default function InstanceDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [followOutput, setFollowOutput] = useState(true);
+  const [consoleQuery, setConsoleQuery] = useState("");
   const logRef = useRef<HTMLDivElement>(null);
 
   const logs = useLaunchStore((s) => (id ? s.logsByInstance[id] ?? [] : []));
-  const running = useLaunchStore((s) => (id ? s.runningInstanceIds.has(id) : false));
-  const launching = useLaunchStore((s) => (id ? s.launchingInstanceIds.has(id) : false));
+  const state = id ? useInstanceState(id) : "READY";
+  const running = state === "RUNNING" || state === "STOPPING";
+  const launching = state === "LAUNCHING" || state === "DOWNLOADING" || state === "INSTALLING";
+  const crashed = state === "CRASHED";
+  const crashInfo = useLaunchStore((s) => (id ? s.crashInfoByInstance[id] : undefined));
+  const clearCrashed = useLaunchStore((s) => s.clearCrashed);
   const kill = useLaunchStore((s) => s.kill);
   const clearLog = useLaunchStore((s) => s.clearLog);
+
+  // Console search (case-insensitive, on the plain text) — derived, never mutating.
+  const filteredLogs = useMemo(() => {
+    const q = consoleQuery.trim().toLowerCase();
+    if (!q) return logs;
+    return logs.filter((l) => l.line.toLowerCase().includes(q));
+  }, [logs, consoleQuery]);
 
   const [health, setHealth] = useState<InstanceHealthReport | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
@@ -80,10 +100,11 @@ export default function InstanceDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    // Only auto-scroll when the user has "Follow output" enabled — disabling it lets
-    // them scroll back through history without the stream yanking the view down.
-    if (followOutput) logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [logs, followOutput]);
+    // Only auto-scroll when the user has "Follow output" enabled (and isn't searching)
+    // — disabling it lets them scroll back through history without the stream yanking
+    // the view down.
+    if (followOutput && !consoleQuery) logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [logs, followOutput, consoleQuery]);
 
   async function handlePlay() {
     if (!id) return;
@@ -92,7 +113,7 @@ export default function InstanceDetailPage() {
       await launchInstance(id);
       setTab("Console");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to launch");
+      setError(friendlyErrorMessage(e));
     }
   }
 
@@ -173,18 +194,7 @@ export default function InstanceDetailPage() {
             <h1 className="text-xl md:text-2xl font-semibold text-noxara-white truncate">
               {instance.name}
             </h1>
-            {running && (
-              <span className="flex items-center gap-1.5 text-[10px] font-medium bg-noxara-success/10 text-noxara-success px-2 py-0.5 rounded-full">
-                <span className="w-1.5 h-1.5 rounded-full bg-noxara-success animate-pulse" />
-                RUNNING
-              </span>
-            )}
-            {launching && (
-              <span className="flex items-center gap-1.5 text-[10px] font-medium bg-noxara-elevated text-noxara-text px-2 py-0.5 rounded-full">
-                <Loader2 size={10} className="animate-spin" />
-                LAUNCHING
-              </span>
-            )}
+            {id && <InstanceStateBadge instanceId={id} />}
           </div>
           <p className="text-sm text-noxara-subtle mt-0.5">
             Minecraft {instance.minecraftVersion} ·{" "}
@@ -251,6 +261,17 @@ export default function InstanceDetailPage() {
         </div>
       )}
 
+      {crashed && crashInfo && id && (
+        <CrashBanner
+          info={crashInfo}
+          logs={logs}
+          onViewLog={() => setTab("Console")}
+          onRestart={handlePlay}
+          onRepair={handleRepair}
+          onDismiss={() => clearCrashed(id)}
+        />
+      )}
+
       <div className="flex gap-1 border-b border-noxara-border mb-4">
         {TABS.map((t) => (
           <button
@@ -268,7 +289,18 @@ export default function InstanceDetailPage() {
       {tab === "Overview" && (
         <div className="space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <InfoRow label="Java" value={instance.javaPath ?? "Auto-detected"} />
+            <JavaSelector
+              current={instance.javaPath}
+              onChanged={async (javaPath) => {
+                try {
+                  const updated = await window.noxara.updateInstance(instance.id, { javaPath });
+                  setInstance(updated);
+                  toast.success(javaPath ? "Java runtime pinned" : "Java set to auto-detect");
+                } catch (e) {
+                  toast.error("Couldn't change Java", e instanceof Error ? e.message : undefined);
+                }
+              }}
+            />
             <InfoRow label="Loader" value={loaderLabel(instance.loader, instance.loaderVersion)} />
             <InfoRow label="Memory" value={`${instance.minRamMb} – ${instance.maxRamMb} MB`} />
             <InfoRow label="Created" value={new Date(instance.createdAt).toLocaleDateString()} />
@@ -286,6 +318,8 @@ export default function InstanceDetailPage() {
 
       {tab === "Mods" && instance && <InstanceModsTab instance={instance} />}
 
+      {tab === "Backups" && instance && <BackupsTab instanceId={instance.id} />}
+
       {tab === "Console" && (
         <div className="yz-card overflow-hidden">
           <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-noxara-border">
@@ -300,10 +334,28 @@ export default function InstanceDetailPage() {
                 <span className="text-noxara-muted">starting…</span>
               ) : null}
               <span className="text-noxara-muted truncate hidden sm:inline">
-                {logs.length} line{logs.length === 1 ? "" : "s"}
+                {filteredLogs.length} / {logs.length} line{logs.length === 1 ? "" : "s"}
               </span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
+              <div className="relative">
+                <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-noxara-muted" />
+                <input
+                  value={consoleQuery}
+                  onChange={(e) => setConsoleQuery(e.target.value)}
+                  placeholder="Search console…"
+                  className="bg-noxara-elevated border border-noxara-border rounded text-xs pl-7 pr-2 py-1 w-40 focus:border-noxara-border-strong outline-none text-noxara-text placeholder:text-noxara-muted"
+                />
+                {consoleQuery && (
+                  <button
+                    onClick={() => setConsoleQuery("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-noxara-muted hover:text-noxara-text"
+                    aria-label="Clear search"
+                  >
+                    <X size={11} />
+                  </button>
+                )}
+              </div>
               <button
                 onClick={() => setFollowOutput((f) => !f)}
                 className={`text-xs px-2 py-1 rounded transition-colors ${
@@ -339,13 +391,23 @@ export default function InstanceDetailPage() {
             ref={logRef}
             className="h-96 overflow-y-auto font-mono text-xs whitespace-pre-wrap px-3 py-2 bg-noxara-black/40"
           >
-            {logs.length === 0 ? (
+            {filteredLogs.length === 0 ? (
               <p className="text-noxara-muted">
-                No output yet. Launch the instance to see live console output here.
+                {consoleQuery
+                  ? "No console lines match that search."
+                  : "No output yet. Launch the instance to see live console output here."}
               </p>
             ) : (
-              logs.map((entry, idx) => (
+              filteredLogs.map((entry, idx) => (
                 <div key={idx} className={consoleLineClass(entry)}>
+                  <span className="text-noxara-muted/70 select-none mr-2">
+                    {new Date(entry.timestamp).toLocaleTimeString(undefined, {
+                      hour12: false,
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
                   {entry.line}
                 </div>
               ))
@@ -377,6 +439,78 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div className="yz-card px-4 py-3">
       <div className="yz-label mb-1">{label}</div>
       <div className="text-sm text-noxara-text">{value}</div>
+    </div>
+  );
+}
+
+/** Per-instance Java runtime picker: lists every Java the core detects and lets the
+ * user pin one (or revert to auto-detection, which picks the best fit for the
+ * instance's Minecraft version at launch time). */
+function JavaSelector({
+  current,
+  onChanged,
+}: {
+  current: string | null;
+  onChanged: (path: string | null) => void | Promise<void>;
+}) {
+  const [runtimes, setRuntimes] = useState<JavaInstallation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    window.noxara
+      .detectJava()
+      .then(setRuntimes)
+      .catch(() => setRuntimes([]))
+      .finally(() => setLoading(false));
+  }, []);
+
+  // When the pinned path isn't among the detected runtimes (e.g. the runtime was
+  // uninstalled), show a placeholder so the select never silently falls back.
+  const pinnedMissing = current !== null && !runtimes.some((r) => r.path === current);
+
+  async function handleChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const next = e.target.value === "" ? null : e.target.value;
+    setSaving(true);
+    try {
+      await onChanged(next);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="yz-card px-4 py-3">
+      <div className="flex items-center justify-between mb-1">
+        <span className="yz-label">Java Runtime</span>
+        {saving && <Loader2 size={12} className="animate-spin text-noxara-muted" />}
+      </div>
+      <select
+        className="yz-select w-full text-xs"
+        value={pinnedMissing ? "__missing" : (current ?? "")}
+        onChange={handleChange}
+        disabled={saving}
+      >
+        <option value="">Auto-detect (recommended)</option>
+        {loading && (
+          <option value="__scanning" disabled>
+            Scanning for Java…
+          </option>
+        )}
+        {runtimes.map((r) => (
+          <option key={r.path} value={r.path}>
+            Java {r.majorVersion} · {r.vendor ?? "Unknown"} · {r.version}
+          </option>
+        ))}
+        {pinnedMissing && (
+          <option value="__missing" disabled>
+            Pinned runtime no longer detected: {current}
+          </option>
+        )}
+      </select>
+      <p className="text-[11px] text-noxara-muted mt-1.5">
+        Auto-detect picks the best Java for this Minecraft version at launch. Pin one here to override.
+      </p>
     </div>
   );
 }
@@ -721,6 +855,160 @@ function InstanceModsTab({ instance }: { instance: InstanceRecord }) {
           onInstall={handleInstall}
           onClose={() => setDetailsMod(null)}
         />
+      )}
+    </div>
+  );
+}
+
+/** Backups for one instance: create a zip snapshot, list them, restore or delete.
+ * Restore asks for confirmation since it replaces the instance's files. */
+function BackupsTab({ instanceId }: { instanceId: string }) {
+  const [backups, setBackups] = useState<BackupRecord[]>([]);
+  const [label, setLabel] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function refresh() {
+    try {
+      setBackups(await window.noxara.listBackups(instanceId));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't load backups");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instanceId]);
+
+  async function handleCreate() {
+    if (!label.trim()) {
+      toast.error("Give the backup a label first");
+      return;
+    }
+    setBusy(true);
+    try {
+      await window.noxara.createBackup(instanceId, label);
+      toast.success("Backup created");
+      setLabel("");
+      await refresh();
+    } catch (e) {
+      toast.error("Backup failed", e instanceof Error ? e.message : undefined);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRestore(b: BackupRecord) {
+    const ok = window.confirm(
+      `Restore "${b.label}"?\n\nThis replaces the instance's current files with the snapshot from ${new Date(
+        b.createdAt
+      ).toLocaleString()}. Make a fresh backup first if you might want the current state back.`
+    );
+    if (!ok) return;
+    setBusy(true);
+    try {
+      await window.noxara.restoreBackup(b.id);
+      toast.success("Backup restored");
+      await refresh();
+    } catch (e) {
+      toast.error("Restore failed", e instanceof Error ? e.message : undefined);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDelete(b: BackupRecord) {
+    if (!window.confirm(`Delete backup "${b.label}"? This can't be undone.`)) return;
+    try {
+      await window.noxara.deleteBackup(b.id);
+      toast.success("Backup deleted");
+      await refresh();
+    } catch (e) {
+      toast.error("Couldn't delete backup", e instanceof Error ? e.message : undefined);
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="yz-card px-4 py-3">
+        <div className="yz-label mb-1.5">Create a backup</div>
+        <div className="flex gap-2">
+          <input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleCreate();
+            }}
+            placeholder="e.g. Before installing shaders"
+            className="yz-input flex-1"
+            disabled={busy}
+          />
+          <button
+            onClick={handleCreate}
+            disabled={busy || !label.trim()}
+            className="yz-btn-primary text-xs px-3 py-2 flex items-center gap-1.5 disabled:opacity-40"
+          >
+            <Plus size={13} />
+            Backup
+          </button>
+        </div>
+        <p className="text-[11px] text-noxara-muted mt-1.5">
+          A full snapshot of this instance's folder. You can restore it at any time.
+        </p>
+      </div>
+
+      {error && <p className="text-sm text-noxara-error">{error}</p>}
+
+      {loading ? (
+        <div className="space-y-2">
+          {Array.from({ length: 2 }).map((_, i) => (
+            <div key={i} className="yz-skeleton h-14 rounded-md" />
+          ))}
+        </div>
+      ) : backups.length === 0 ? (
+        <div className="yz-card px-4 py-6 text-center text-sm text-noxara-muted">
+          <Archive size={20} className="mx-auto mb-2 text-noxara-subtle" />
+          No backups yet. Create one to snapshot this instance.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {backups.map((b) => (
+            <div key={b.id} className="yz-card px-3.5 py-2.5 flex items-center justify-between gap-3">
+              <div className="min-w-0 flex items-center gap-2.5">
+                <Archive size={15} className="text-noxara-subtle shrink-0" />
+                <div className="min-w-0">
+                  <div className="text-sm text-noxara-text truncate">{b.label}</div>
+                  <div className="text-xs text-noxara-muted">
+                    {new Date(b.createdAt).toLocaleString()} · {formatBytes(b.sizeBytes)}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={() => handleRestore(b)}
+                  disabled={busy}
+                  className="yz-btn-secondary text-xs px-2.5 py-1 flex items-center gap-1 disabled:opacity-40"
+                >
+                  <Download size={12} />
+                  Restore
+                </button>
+                <button
+                  onClick={() => handleDelete(b)}
+                  disabled={busy}
+                  className="yz-btn-ghost text-xs px-2 py-1 text-noxara-error disabled:opacity-40"
+                  aria-label={`Delete backup ${b.label}`}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

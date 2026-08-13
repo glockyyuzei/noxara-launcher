@@ -23,7 +23,7 @@ import { getDb } from "./database";
 import { getInstanceDirById, listInstances, createInstance } from "./instances";
 import { assertWithin, rootDir } from "../filesystem/paths";
 import { registerDownload, unregisterDownload, signalFor } from "./download-control";
-import { startActivity, progressActivity, succeedActivity, failActivity } from "./activity";
+import { startActivity, updateActivity, progressActivity, succeedActivity, failActivity } from "./activity";
 import { coreBridge } from "./core-bridge";
 import * as modrinth from "./modrinth";
 import type {
@@ -149,6 +149,13 @@ async function downloadWithProgress(
           instanceId,
           bytesDownloaded,
           totalBytes,
+        });
+        // Feed real byte deltas into the global activity manager (the activity owns
+        // the same taskId) so the overlay shows actual bytes + rate + ETA.
+        progressActivity(taskId, {
+          currentBytes: bytesDownloaded,
+          totalBytes,
+          progress: totalBytes > 0 ? Math.min(1, bytesDownloaded / totalBytes) : undefined,
         });
       }
     }
@@ -451,6 +458,35 @@ export async function checkModpackUpdates(instanceId: string): Promise<ModpackUp
   return updates;
 }
 
+/** Checks installed resource packs / shaders for a newer published version. These
+ * aren't loader-scoped on Modrinth, so no loader filter is applied — only the
+ * instance's Minecraft version narrows the search. */
+export async function checkContentUpdates(
+  instanceId: string,
+  category: Exclude<ContentCategory, "modpack">
+): Promise<ModpackUpdateInfo[]> {
+  const { gameVersion } = instanceLoaderAndVersion(instanceId);
+
+  const installed = listInstalledContent(instanceId, category).filter(
+    (c) => c.source === "modrinth" && c.sourceId && c.sourceVersionId
+  );
+
+  const updates: ModpackUpdateInfo[] = [];
+  for (const item of installed) {
+    try {
+      const versions = await modrinth.getProjectVersions(item.sourceId!, undefined, gameVersion);
+      const latest = versions[0];
+      if (latest && latest.id !== item.sourceVersionId) {
+        updates.push({ contentId: item.id, currentVersion: item.version, latestVersion: latest });
+      }
+    } catch {
+      // Skip projects whose lookup fails (e.g. removed from Modrinth).
+      continue;
+    }
+  }
+  return updates;
+}
+
 /** Reads a dependency's pinned version from an mrpack manifest, normalizing wildcards
  * ("*" / "latest") to null so the instance resolves the loader's recommended build. */
 function normalizeDependency(value: string | undefined): string | null {
@@ -552,6 +588,9 @@ export async function importModpackFromFile(
     }
 
     progressActivity(importTaskId, {}, "importing", { description: "Installing pack contents" });
+    // From here on the import is tied to a concrete instance, so the UI can show the
+    // instance's real lifecycle state (INSTALLING) instead of treating it as ready.
+    updateActivity(importTaskId, { instanceId: instance.id });
     const instancePath = getInstanceDirById(instance.id);
     const staging = modpackStagingDir(instancePath);
     const target = path.join(staging, `${contentId}.mrpack`);
@@ -724,9 +763,14 @@ async function installSingleFileCore(
 
   const db = getDb();
   const existing = db
-    .prepare("SELECT id FROM content_items WHERE instance_id = ? AND category = ? AND source_id = ?")
-    .get(instanceId, category, version.projectId) as { id: string } | undefined;
+    .prepare("SELECT id, filename FROM content_items WHERE instance_id = ? AND category = ? AND source_id = ?")
+    .get(instanceId, category, version.projectId) as { id: string; filename: string } | undefined;
   const id = existing?.id ?? randomUUID();
+  // Updating/reinstalling: drop the previously-downloaded file when its name changed
+  // so an update never leaves a stale duplicate behind.
+  if (existing && existing.filename && existing.filename !== safeFilename) {
+    fs.rmSync(assertWithin(dir, path.basename(existing.filename)), { force: true });
+  }
 
   const row: ContentRow = {
     id,

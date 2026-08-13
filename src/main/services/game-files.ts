@@ -118,9 +118,16 @@ export async function ensureVersionAssetsAndLibraries(
   }
 
   const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+  const settings = getSettings();
   const failed = await coreBridge.call<{ failed: string[] }>(
     "downloads.batch",
-    { taskId, tasks, maxConcurrency: getSettings().maxConcurrentDownloads },
+    {
+      taskId,
+      tasks,
+      maxConcurrency: settings.maxConcurrentDownloads,
+      maxAttempts: settings.downloadRetryCount,
+      perRequestTimeoutSec: settings.downloadTimeoutSec,
+    },
     DOWNLOAD_TIMEOUT_MS
   );
   if (failed.failed.length > 0) {
