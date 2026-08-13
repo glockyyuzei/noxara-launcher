@@ -161,7 +161,9 @@ export async function refreshAccountProfile(accountId: string): Promise<AccountR
 
   // resolveMinecraftSession refreshes MSA -> Xbox -> XSTS -> Minecraft tokens and
   // persists the rotated refresh token, giving us a live Minecraft access token.
-  const session = await resolveMinecraftSession(accountId);
+  // Forced refresh so "Refresh profile" always walks the chain instead of reusing
+  // a cached session (the point is to prove the account still authenticates).
+  const session = await resolveMinecraftSession(accountId, { force: true });
 
   // The freshly-derived Minecraft profile is authoritative for name + avatar.
   const { fetchProfileForAvatar } = await import("../auth/microsoft");
@@ -216,10 +218,26 @@ export interface ResolvedMinecraftSession {
 }
 
 /**
+ * In-memory cache of resolved Minecraft sessions keyed by account id. Microsoft
+ * access tokens live ~24h, but the full refresh chain (MSA -> Xbox -> XSTS ->
+ * login_with_xbox) behind Akamai is the flakiest hop in the launcher — hammering
+ * it on every launch/apply/avatar refresh is what produced intermittent 403s. We
+ * reuse a session for its remaining validity window (minus a safety margin) and
+ * only re-run the chain when it has genuinely expired.
+ */
+const sessionCache = new Map<
+  string,
+  { session: ResolvedMinecraftSession; expiresAt: number }
+>();
+
+/** Reuse a session until 5 minutes before its token actually expires. */
+const SESSION_REUSE_MARGIN_MS = 5 * 60 * 1000;
+
+/**
  * Gets a launch/API-ready Minecraft session for an account: for offline profiles this
  * is just the stored local identity; for Microsoft accounts it refreshes the MSA
  * session and walks it through Xbox Live -> XSTS -> Minecraft Services to produce a
- * live access token.
+ * live access token (cached and reused until it nears expiry — see sessionCache).
  *
  * This is the single place that logic lives — both launching the game (launch.ts) and
  * anything else that needs to call an authenticated Mojang API on the user's behalf
@@ -232,12 +250,22 @@ export interface ResolvedMinecraftSession {
  * Microsoft sign-in after the first refresh, forcing a full re-login. We persist the
  * rotated token here so that doesn't happen.
  */
-export async function resolveMinecraftSession(accountId: string): Promise<ResolvedMinecraftSession> {
+export async function resolveMinecraftSession(
+  accountId: string,
+  opts?: { force?: boolean }
+): Promise<ResolvedMinecraftSession> {
   const account = getAccountById(accountId);
   if (!account) throw new Error("Account not found.");
 
   if (account.kind === "offline") {
     return { username: account.username, uuid: account.uuid, accessToken: "", userType: "legacy" };
+  }
+
+  if (!opts?.force) {
+    const cached = sessionCache.get(account.id);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.session;
+    }
   }
 
   const refreshToken = await getMicrosoftRefreshToken(account.id);
@@ -255,10 +283,17 @@ export async function resolveMinecraftSession(accountId: string): Promise<Resolv
   // Persist Microsoft's newly-rotated refresh token — see doc comment above.
   await keytar.setPassword(KEYTAR_SERVICE, account.id, refreshed.refreshToken);
 
-  return {
+  const resolved: ResolvedMinecraftSession = {
     username: account.username,
     uuid: session.minecraftUuid,
     accessToken: session.minecraftAccessToken,
     userType: "msa",
   };
+
+  sessionCache.set(account.id, {
+    session: resolved,
+    expiresAt: session.expiresAt - SESSION_REUSE_MARGIN_MS,
+  });
+
+  return resolved;
 }

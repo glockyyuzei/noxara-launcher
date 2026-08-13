@@ -39,6 +39,7 @@ const api = {
 
   detectJava: () => ipcRenderer.invoke(IPC_CHANNELS.detectJava),
   testJavaPath: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.testJavaPath, path),
+  ensureJavaRuntime: (majorVersion: number) => ipcRenderer.invoke(IPC_CHANNELS.ensureJavaRuntime, majorVersion),
 
   listInstances: () => ipcRenderer.invoke(IPC_CHANNELS.listInstances),
   createInstance: (input: CreateInstanceInput) => ipcRenderer.invoke(IPC_CHANNELS.createInstance, input),
@@ -134,6 +135,8 @@ const api = {
     ipcRenderer.invoke(IPC_CHANNELS.setAccountSkin, accountId, skinId),
   applySkin: (accountId: string, skinId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.applySkin, accountId, skinId),
+  getAccountSkinTexture: (accountId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.getAccountSkinTexture, accountId),
 
   windowMinimize: () => ipcRenderer.send(IPC_CHANNELS.windowMinimize),
   windowMaximize: () => ipcRenderer.send(IPC_CHANNELS.windowMaximize),

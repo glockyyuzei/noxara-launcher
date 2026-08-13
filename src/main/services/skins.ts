@@ -23,8 +23,8 @@ import { getDb } from "./database";
 import { skinsDir } from "../filesystem/paths";
 import { assertWithin } from "../filesystem/paths";
 import { getAccountById, resolveMinecraftSession } from "./accounts";
-import { uploadSkinToMojang } from "../auth/microsoft";
-import type { SkinRecord } from "../../shared/types/ipc";
+import { uploadSkinToMojang, fetchProfileForAvatar } from "../auth/microsoft";
+import type { AccountSkinTexture, SkinRecord } from "../../shared/types/ipc";
 
 interface SkinRow {
   id: string;
@@ -146,6 +146,56 @@ export function getAccountSkin(accountId: string): SkinRecord | null {
   if (!link) return null;
   const row = db.prepare("SELECT * FROM skins WHERE id = ?").get(link.skin_id) as SkinRow | undefined;
   return row ? rowToRecord(row) : null;
+}
+
+/** Downloads a remote PNG (Mojang texture CDN) into a data URL. Fails soft — returns
+ * null rather than throwing so the viewer can fall back to its default placeholder. */
+async function downloadPngDataUrl(url: string): Promise<string | null> {
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": "NoxaraLauncher/0.1" } });
+    if (!resp.ok) return null;
+    const buf = Buffer.from(await resp.arrayBuffer());
+    if (buf.length === 0) return null;
+    return `data:image/png;base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolves the skin the 3D viewer should render for an account:
+ *  - Microsoft accounts: the account's actual current Mojang skin (fetched fresh,
+ *    including its model variant). Falls back to the stored skin if the network call
+ *    fails, and to null if nothing is available.
+ *  - Offline accounts: their locally stored/selected skin.
+ * Returns null when there is genuinely nothing to show (viewer shows a default).
+ */
+export async function getAccountSkinTexture(accountId: string): Promise<AccountSkinTexture | null> {
+  const account = getAccountById(accountId);
+  if (!account) throw new Error("Account not found.");
+
+  if (account.kind === "offline") {
+    const stored = getAccountSkin(accountId);
+    if (!stored) return null;
+    return { dataUrl: stored.dataUrl, model: stored.model, source: "library" };
+  }
+
+  try {
+    const session = await resolveMinecraftSession(accountId);
+    const profile = await fetchProfileForAvatar(session.accessToken);
+    if (profile.skinUrl) {
+      const dataUrl = await downloadPngDataUrl(profile.skinUrl);
+      if (dataUrl) {
+        return { dataUrl, model: profile.variant === "slim" ? "slim" : "classic", source: "mojang" };
+      }
+    }
+  } catch {
+    // Network/auth failure — fall through to the locally stored skin if there is one.
+  }
+
+  const stored = getAccountSkin(accountId);
+  if (!stored) return null;
+  return { dataUrl: stored.dataUrl, model: stored.model, source: "library" };
 }
 
 /** Marks a stored skin as this account's selected skin in the launcher UI only —

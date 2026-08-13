@@ -1,11 +1,26 @@
 //! Real Java runtime detection. Scans PATH, common install locations per OS, and
 //! well-known launcher-managed Java directories (Mojang's own bundled runtimes,
 //! if present from a vanilla launcher install). No fabricated version lists.
+//!
+//! Also provides automatic installation of Mojang's official bundled Java runtimes
+//! (`java.ensureRuntime`): the same manifests the vanilla launcher uses, downloaded
+//! sha1-verified and extracted under the launcher's managed Java directory, so a
+//! user with no system Java can still press Play without installing anything.
 
+use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
+
+use crate::downloads::DownloadTask;
+
+/// Mojang's Java runtime product manifest — the exact endpoint the official launcher
+/// uses to know which JREs exist per platform. The path hash is stable/published.
+const JAVA_RUNTIME_PRODUCT_URL: &str =
+    "https://launchermeta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct JavaInstallation {
@@ -14,6 +29,288 @@ pub struct JavaInstallation {
     pub major_version: u32,
     pub vendor: Option<String>,
     pub is_64bit: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeManifestRef {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeVersion {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuntimeEntry {
+    version: RuntimeVersion,
+    manifest: RuntimeManifestRef,
+}
+
+/// Product manifest: platform -> component -> candidate runtimes (usually one entry).
+type JavaProductManifest = HashMap<String, HashMap<String, Vec<RuntimeEntry>>>;
+
+/// Parses the actual major version from a runtime's version string, e.g.
+/// "21.0.7" -> 21, "8u51" -> 8, "16.0.1.9.1" -> 16, "1.8.0_202" -> 8.
+fn major_of_version_string(name: &str) -> Option<u32> {
+    let s = name.trim();
+    if let Some(rest) = s.strip_prefix("1.") {
+        // legacy "1.x" scheme
+        return rest.split('.').next().and_then(|v| v.parse::<u32>().ok());
+    }
+    s.split(|c: char| !c.is_ascii_digit())
+        .next()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|m| *m > 0)
+}
+
+fn platform_key() -> &'static str {
+    if cfg!(windows) {
+        "windows-x64"
+    } else if cfg!(target_os = "macos") {
+        if std::env::consts::ARCH == "aarch64" {
+            "mac-os-arm64"
+        } else {
+            "mac-os"
+        }
+    } else {
+        "linux"
+    }
+}
+
+fn java_exe_name() -> &'static str {
+    if cfg!(windows) {
+        "java.exe"
+    } else {
+        "java"
+    }
+}
+
+fn runtime_cache_dir() -> Result<PathBuf> {
+    let base = dirs::cache_dir().context("no OS cache directory")?;
+    let dir = base.join("NoxaraLauncher").join("meta");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+async fn fetch_json(client: &reqwest::Client, url: &str, cache_key: &str, ttl: Duration) -> Result<serde_json::Value> {
+    let cache_file = runtime_cache_dir()?.join(format!("java-runtime-{cache_key}.json"));
+
+    if let Ok(meta) = std::fs::metadata(&cache_file) {
+        if let Ok(modified) = meta.modified() {
+            if SystemTime::now().duration_since(modified).unwrap_or(Duration::MAX) < ttl {
+                if let Ok(bytes) = std::fs::read(&cache_file) {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        return Ok(v);
+                    }
+                }
+            }
+        }
+    }
+
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("failed to reach {url}"))?
+        .error_for_status()
+        .with_context(|| format!("server returned an error for {url}"))?;
+    let bytes = resp.bytes().await?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).context("failed to parse Java runtime JSON")?;
+    let _ = std::fs::write(&cache_file, &bytes);
+    Ok(value)
+}
+
+/// Result of a Java runtime installation attempt.
+#[derive(Debug, Serialize)]
+pub struct RuntimeInstallResult {
+    pub path: String,
+    pub component: String,
+    pub major_version: u32,
+    pub downloaded: bool,
+}
+
+/// The path to the java binary of an installed runtime component, if present.
+fn installed_java_path(dest_dir: &Path, component: &str) -> Option<PathBuf> {
+    let exe = java_exe_name();
+    let direct = dest_dir.join(component).join("bin").join(exe);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    let nested = dest_dir.join(component).join("jre").join("bin").join(exe);
+    if nested.is_file() {
+        return Some(nested);
+    }
+    None
+}
+
+/// Downloads (if needed) Mojang's official Java runtime for `component`/`major_version`
+/// into `dest_dir` and returns the absolute java executable path. Reuses an already
+/// installed runtime; otherwise downloads the per-file listing sha1-verified (no wrapper
+/// archive) into dest/<component>/bin/java[.exe]. `task_id` is forwarded to the batch
+/// downloader so progress events update whatever activity the caller registered (e.g.
+/// the launch activity).
+pub async fn ensure_runtime(
+    client: &reqwest::Client,
+    component_hint: &str,
+    major_version: u32,
+    dest_dir: &str,
+    task_id: &str,
+) -> Result<RuntimeInstallResult> {
+    let dest = Path::new(dest_dir);
+    std::fs::create_dir_all(dest)?;
+
+    // Already installed for this component? Use it directly (no network needed).
+    if !component_hint.is_empty() {
+        if let Some(exe) = installed_java_path(dest, component_hint) {
+            return Ok(RuntimeInstallResult {
+                path: exe.to_string_lossy().to_string(),
+                component: component_hint.to_string(),
+                major_version,
+                downloaded: false,
+            });
+        }
+    }
+
+    let product_value = fetch_json(
+        client,
+        JAVA_RUNTIME_PRODUCT_URL,
+        "product",
+        Duration::from_secs(3600),
+    )
+    .await?;
+    let product: JavaProductManifest =
+        serde_json::from_value(product_value).context("unexpected Java runtime product manifest shape")?;
+
+    let platform = platform_key();
+    let platform_runtimes = product
+        .get(platform)
+        .ok_or_else(|| anyhow!("no Java runtime published for platform {platform}"))?;
+
+    // Prefer the exact component Mojang's version JSON asked for (when it exists in
+    // the manifest today); otherwise resolve by the actual Java major published per
+    // component — component names get reshuffled (delta = 21, epsilon = 25 now, and
+    // jre-legacy is Java 8), so never hardcode a name-to-major map.
+    let component = {
+        let exact = (!component_hint.is_empty() && platform_runtimes.contains_key(component_hint))
+            .then_some(component_hint.to_string());
+        exact.or_else(|| {
+            let by_major: Vec<(&String, u32)> = platform_runtimes
+                .iter()
+                .filter_map(|(name, entries)| {
+                    let major = entries
+                        .first()
+                        .and_then(|e| major_of_version_string(&e.version.name))?;
+                    Some((name, major))
+                })
+                .collect();
+            // Exact major first, then the smallest major >= required, then newest overall.
+            by_major
+                .iter()
+                .find(|(_, m)| *m == major_version)
+                .or_else(|| by_major.iter().filter(|(_, m)| *m >= major_version).min_by_key(|(_, m)| *m))
+                .or_else(|| by_major.iter().max_by_key(|(_, m)| *m))
+                .map(|(name, _)| (*name).clone())
+        })
+        .ok_or_else(|| {
+            anyhow!("no Java runtime available for Java {major_version} on {platform}; install one manually")
+        })?
+    };
+
+    // Fast path: already present for the resolved component.
+    if let Some(exe) = installed_java_path(dest, &component) {
+        return Ok(RuntimeInstallResult {
+            path: exe.to_string_lossy().to_string(),
+            component,
+            major_version,
+            downloaded: false,
+        });
+    }
+
+    let entry = platform_runtimes
+        .get(&component)
+        .and_then(|entries| entries.first())
+        .ok_or_else(|| anyhow!("runtime component {component} disappeared from manifest"))?;
+    let manifest_url = entry.manifest.url.clone();
+    let manifest_value = fetch_json(client, &manifest_url, &format!("runtime-{component}"), Duration::from_secs(3600))
+        .await?;
+
+    let files = manifest_value
+        .get("files")
+        .and_then(|v| v.as_object())
+        .context("runtime manifest has no files map")?;
+
+    // The runtime manifest is a per-file listing (bin/, conf/, legal/, lib/, ...) with no
+    // wrapper archive — download each file directly into dest/<component>/<relative path>,
+    // so the layout matches installed_java_path() (dest/<component>/bin/java[.exe]).
+    let component_dir = dest.join(&component);
+    std::fs::create_dir_all(&component_dir)?;
+
+    let mut tasks: Vec<DownloadTask> = Vec::with_capacity(files.len());
+    for (name, entry) in files {
+        if entry.get("type").and_then(|t| t.as_str()) == Some("directory") {
+            continue;
+        }
+        let raw = entry
+            .get("downloads")
+            .and_then(|d| d.get("raw"))
+            .context("file has no raw download")?;
+        let Some(url) = raw.get("url").and_then(|v| v.as_str()) else {
+            continue; // e.g. symlinks / non-file entries
+        };
+        let sha1 = raw.get("sha1").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let size = raw.get("size").and_then(|v| v.as_u64());
+        tasks.push(DownloadTask {
+            url: url.to_string(),
+            dest: component_dir.join(name),
+            sha1,
+            size,
+            label: format!("Java {major_version}: {name}"),
+        });
+    }
+    if tasks.is_empty() {
+        bail!("runtime manifest for {component} contains no downloadable files");
+    }
+
+    // Reuses the batch downloader: skips already-valid files, streams progress events to
+    // the caller's activity/task id, and bounds concurrency.
+    let failed = crate::downloads::download_batch(client, task_id, tasks, 8).await?;
+    if !failed.is_empty() {
+        bail!(
+            "failed to download {} of {} Java {major_version} runtime files",
+            failed.len(),
+            files.len()
+        );
+    }
+
+    // Apply executable bits on Unix where the manifest marks them.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for (name, entry) in files {
+            if entry.get("executable").and_then(|v| v.as_bool()) != Some(true) {
+                continue;
+            }
+            let path = component_dir.join(name);
+            if let Ok(meta) = std::fs::metadata(&path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(perms.mode() | 0o111);
+                let _ = std::fs::set_permissions(&path, perms);
+            }
+        }
+    }
+
+    let exe = installed_java_path(dest, &component)
+        .ok_or_else(|| anyhow!("Java runtime installed but java binary is missing"))?;
+
+    tracing::info!("installed Java runtime {component} -> {}", exe.display());
+
+    Ok(RuntimeInstallResult {
+        path: exe.to_string_lossy().to_string(),
+        component,
+        major_version,
+        downloaded: true,
+    })
 }
 
 pub fn detect_all() -> Vec<JavaInstallation> {
@@ -87,6 +384,8 @@ fn platform_search_dirs() -> Vec<PathBuf> {
 }
 
 /// Non-recursive shallow scan: look one or two levels down for a `bin/java(.exe)`.
+/// Covers system JVMs (jdk-X/bin), macOS bundles (Contents/Home/bin) and Noxara's
+/// own managed runtimes (components/<component>/jre/bin).
 fn scan_dir_for_java(dir: &Path, out: &mut HashSet<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -107,6 +406,12 @@ fn scan_dir_for_java(dir: &Path, out: &mut HashSet<PathBuf>) {
         let direct = path.join("bin").join(exe_name);
         if direct.is_file() {
             out.insert(direct);
+            continue;
+        }
+        // Mojang-style managed runtime: <component>/jre/bin/java
+        let managed = path.join("jre").join("bin").join(exe_name);
+        if managed.is_file() {
+            out.insert(managed);
         }
     }
 }

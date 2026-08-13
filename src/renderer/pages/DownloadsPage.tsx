@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   Archive,
   CheckCircle2,
+  Coffee,
   Download,
   FolderOpen,
   Hammer,
@@ -22,6 +23,7 @@ import type { ActivityRecord, ActivityType } from "@shared/types/ipc";
 
 const TYPE_ICONS: Record<ActivityType, typeof Package> = {
   minecraft: Download,
+  java: Coffee,
   mod: Package,
   content: Image,
   modpack: Archive,

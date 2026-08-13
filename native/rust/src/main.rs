@@ -362,6 +362,36 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
             }
         }
 
+        "java.ensureRuntime" => {
+            let component = req
+                .params
+                .get("component")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let major_version = req
+                .params
+                .get("majorVersion")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(17);
+            let dest_dir = req
+                .params
+                .get("destDir")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("missing destDir"))?
+                .to_string();
+            let task_id = req
+                .params
+                .get("taskId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let result = java::ensure_runtime(http, &component, major_version, &dest_dir, &task_id).await?;
+            Ok(serde_json::to_value(result)?)
+        }
+
         "downloads.batch" => {
             let task_id = req
                 .params

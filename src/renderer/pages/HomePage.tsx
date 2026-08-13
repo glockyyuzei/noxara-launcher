@@ -77,11 +77,16 @@ function percentOf(a: { progress: { progress?: number; currentBytes?: number; to
 /* -------------------------------------------------------------------------- */
 
 function HeroBanner() {
+  const [bannerOk, setBannerOk] = useState(true);
+  const [ratio, setRatio] = useState<number | null>(null);
+
   return (
-    <div className="relative overflow-hidden rounded-lg border border-noxara-border mb-4 animate-fade-in">
-      {/* Background artwork — generated, monochrome, matches Noxara's identity.
-          A soft radial "moon" glows behind the wordmark so the banner reads as a
-          deliberate visual focus without fighting the dark/minimal design. */}
+    <div
+      className="relative overflow-hidden rounded-lg border border-noxara-border animate-fade-in"
+      style={{ aspectRatio: ratio !== null ? `${ratio} / 1` : "2 / 1" }}
+    >
+      {/* Fallback artwork — only visible until a custom banner is placed at
+          src/renderer/public/noxara_banner.png (1774 x 887). */}
       <div className="absolute inset-0 bg-noxara-black" />
       <div
         className="absolute inset-0"
@@ -99,26 +104,29 @@ function HeroBanner() {
           backgroundSize: "32px 32px",
         }}
       />
-      <div className="relative flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 px-5 py-6 md:px-7 md:py-7">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 mb-1.5">
-            <span className="text-[10px] yz-label">www.noxara.com</span>
-          </div>
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-noxara-white">
-            <span className="opacity-90">NOXARA</span>
-          </h1>
-          <p className="text-sm md:text-base text-noxara-subtle mt-1 max-w-md">
-            Manage, install and launch everything from one place.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto">
-          <Link to="/instances" className="yz-btn-primary flex-1 sm:flex-none">
-            <Boxes size={16} /> Explore Instances
-          </Link>
-          <Link to="/servers" className="yz-btn-secondary flex-1 sm:flex-none">
-            <Server size={16} /> Servers
-          </Link>
-        </div>
+      {bannerOk && (
+        <img
+          src="./noxara_banner.png"
+          alt="Noxara banner"
+          className="absolute inset-0 w-full h-full object-cover"
+          onError={() => setBannerOk(false)}
+          onLoad={(e) => {
+            const el = e.currentTarget;
+            if (el.naturalWidth > 0 && el.naturalHeight > 0) {
+              setRatio(el.naturalWidth / el.naturalHeight);
+            }
+          }}
+        />
+      )}
+      {/* Gentle scrim at the bottom so the action buttons stay readable on any artwork. */}
+      <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-noxara-black/60 to-transparent" />
+      <div className="absolute bottom-0 left-0 flex items-center gap-2 p-4 md:p-5">
+        <Link to="/instances" className="yz-btn-primary">
+          <Boxes size={16} /> Explore Instances
+        </Link>
+        <Link to="/servers" className="yz-btn-secondary">
+          <Server size={16} /> Servers
+        </Link>
       </div>
     </div>
   );
@@ -169,62 +177,71 @@ function ContinuePlayingCard({ instance }: { instance: InstanceRecord }) {
   }
 
   return (
-    <div className="relative overflow-hidden rounded-lg border border-noxara-border animate-fade-in">
-      <InstanceCover loader={instance.loader} className="absolute inset-0 rounded-none border-0" />
-      <div className="absolute inset-0 bg-gradient-to-t from-black via-black/70 to-black/30" />
-      <div className="relative flex flex-col md:flex-row md:items-end gap-4 p-4 md:p-5 min-h-[10rem]">
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
-            <span className="text-[10px] yz-label">Continue Playing</span>
-            <span className="text-[10px] font-medium bg-noxara-white/10 text-noxara-subtle px-1.5 py-0.5 rounded-full">
-              {loaderLabel(instance.loader)}
-            </span>
-            {running && (
-              <span className="flex items-center gap-1 text-[10px] font-medium bg-noxara-success/10 text-noxara-success px-1.5 py-0.5 rounded-full">
-                <span className="w-1 h-1 rounded-full bg-noxara-success animate-pulse" /> RUNNING
-              </span>
-            )}
-          </div>
-          <div className="text-xl md:text-2xl font-semibold text-noxara-white truncate">{instance.name}</div>
-
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-noxara-subtle mt-1.5">
-            <span className="inline-flex items-center gap-1">
-              <Cpu size={12} /> Minecraft {instance.minecraftVersion}
-            </span>
-            <span className="inline-flex items-center gap-1">
-              <Layers size={12} />
-              {loaderLabel(instance.loader)}
-              {instance.loaderVersion ? ` ${instance.loaderVersion}` : ""}
-            </span>
-            {modCount !== null && (
-              <span className="inline-flex items-center gap-1">{modCount} mod{modCount === 1 ? "" : "s"}</span>
-            )}
-            <span className="inline-flex items-center gap-1">
-              <Clock size={12} /> {timeAgo(instance.lastPlayedAt)}
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          {running ? (
-            <button onClick={handleKill} className="yz-btn-danger">
-              <X size={16} /> Kill Instance
-            </button>
-          ) : (
-            <button onClick={handlePlay} disabled={launching} className="yz-btn-primary px-6">
-              {launching ? (
-                <>
-                  <Loader2 size={16} className="animate-spin" /> Launching…
-                </>
-              ) : (
-                <>
-                  <Play size={16} /> Play
-                </>
-              )}
-            </button>
-          )}
-          <Link to={`/instances/${instance.id}`} className="yz-btn-secondary bg-black/30 backdrop-blur-sm">
-            Details
+    <div className="yz-card overflow-hidden animate-fade-in">
+      <div className="px-4 py-3.5 md:px-5">
+        <div className="flex items-center justify-between gap-3 mb-3">
+          <span className="text-xs yz-label">Continue Playing</span>
+          <Link
+            to={`/instances/${instance.id}`}
+            className="inline-flex items-center gap-1 text-[11px] text-noxara-muted hover:text-noxara-text transition-colors"
+          >
+            View details <ArrowRight size={11} />
           </Link>
+        </div>
+        <div className="flex items-center gap-3 md:gap-4">
+          <div className="relative shrink-0">
+            <InstanceCover loader={instance.loader} className="w-16 h-16 md:w-20 md:h-20 rounded-lg" compact />
+            {running && (
+              <span className="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-noxara-success animate-pulse" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5 mb-1">
+              <span className="text-base md:text-lg font-semibold text-noxara-white truncate">{instance.name}</span>
+              {running && (
+                <span className="flex items-center gap-1 text-[10px] font-medium bg-noxara-success/10 text-noxara-success px-1.5 py-0.5 rounded-full">
+                  <span className="w-1 h-1 rounded-full bg-noxara-success animate-pulse" /> RUNNING
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-noxara-subtle">
+              <span className="inline-flex items-center gap-1">
+                <Cpu size={11} /> Minecraft {instance.minecraftVersion}
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <Layers size={11} />
+                {loaderLabel(instance.loader)}
+                {instance.loaderVersion ? ` ${instance.loaderVersion}` : ""}
+              </span>
+              {modCount !== null && (
+                <span>
+                  {modCount} mod{modCount === 1 ? "" : "s"}
+                </span>
+              )}
+              <span className="inline-flex items-center gap-1">
+                <Clock size={11} /> {timeAgo(instance.lastPlayedAt)}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {running ? (
+              <button onClick={handleKill} className="yz-btn-danger">
+                <X size={15} /> Kill Instance
+              </button>
+            ) : (
+              <button onClick={handlePlay} disabled={launching} className="yz-btn-primary px-5">
+                {launching ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" /> Launching…
+                  </>
+                ) : (
+                  <>
+                    <Play size={15} /> Play
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -360,12 +377,12 @@ const QUICK_ACTIONS = [
 
 function QuickActions() {
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
       {QUICK_ACTIONS.map(({ to, label, icon: Icon }, i) => (
         <Link
           key={to}
           to={to}
-          className="inline-flex items-center gap-2 yz-btn-ghost !px-3 !py-1.5 text-xs border border-transparent hover:border-noxara-border rounded-md animate-fade-in"
+          className="inline-flex items-center justify-center gap-2 yz-btn-ghost !px-3 !py-2 text-xs border border-transparent hover:border-noxara-border rounded-md animate-fade-in"
           style={{ animationDelay: `${i * 30}ms` }}
         >
           <Icon size={14} className="text-noxara-muted" />
@@ -506,10 +523,10 @@ export default function HomePage() {
 
   if (loading) {
     return (
-      <div className="p-4 md:p-6 max-w-7xl mx-auto">
+      <div className="p-4 md:p-6 w-full">
         <div className="yz-skeleton h-28 md:h-32 rounded-lg mb-4" />
-        <div className="yz-skeleton h-28 rounded-lg mb-4" />
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2 mb-4">
+        <div className="yz-skeleton h-16 rounded-lg mb-4" />
+        <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2 mb-4">
           {Array.from({ length: 6 }).map((_, i) => (
             <div key={i}>
               <div className="yz-skeleton aspect-video rounded-md mb-1.5" />
@@ -523,7 +540,7 @@ export default function HomePage() {
   }
 
   return (
-    <div className="p-4 md:p-6 max-w-7xl mx-auto space-y-6">
+    <div className="p-4 md:p-6 w-full space-y-5">
       <PageHeader
         title={account ? `${greeting}, ${account.username}` : greeting}
         actions={
@@ -579,8 +596,9 @@ export default function HomePage() {
             </section>
           ) : (
             <div className="yz-card px-4 py-3 flex items-center justify-between gap-3">
-              <div className="text-sm text-noxara-text">
-                Play something to pick up where you left off — recently played instances appear here.
+              <div className="flex items-center gap-3 text-sm text-noxara-text min-w-0">
+                <span className="text-xs yz-label shrink-0">Continue Playing</span>
+                <span className="hidden sm:inline text-xs text-noxara-muted truncate">No instances played yet</span>
               </div>
               <Link to="/instances" className="yz-btn-secondary shrink-0">
                 <Plus size={15} /> Create Instance
@@ -596,7 +614,7 @@ export default function HomePage() {
           {featured.length > 0 && (
             <section aria-label="Featured instances">
               <p className="text-xs yz-label mb-2">Featured Instances</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-2">
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
                 {featured.map((i, idx) => (
                   <InstanceCard key={i.id} instance={i} index={idx} />
                 ))}
@@ -604,16 +622,20 @@ export default function HomePage() {
             </section>
           )}
 
-          {recents.length > 0 && (
-            <section aria-label="Recently played">
-              <p className="text-xs yz-label mb-2">Recently Played</p>
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-6 gap-2">
+          <section aria-label="Recently played">
+            <p className="text-xs yz-label mb-2">Recently Played</p>
+            {recents.length > 0 ? (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
                 {recents.map((i, idx) => (
                   <InstanceCard key={i.id} instance={i} index={idx} />
                 ))}
               </div>
-            </section>
-          )}
+            ) : (
+              <div className="yz-card px-4 py-3 text-sm text-noxara-text">
+                Instances you play will show up here for quick access.
+              </div>
+            )}
+          </section>
 
           <DownloadsSection />
         </>

@@ -64,6 +64,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
 
   ipcMain.handle(IPC_CHANNELS.detectJava, safe(() => javaService.detectJava()));
   ipcMain.handle(IPC_CHANNELS.testJavaPath, safe((_e, path: string) => javaService.testJavaPath(path)));
+  ipcMain.handle(
+    IPC_CHANNELS.ensureJavaRuntime,
+    safe((_e, majorVersion: number) => javaService.installJavaRuntime(majorVersion))
+  );
 
   ipcMain.handle(IPC_CHANNELS.listInstances, safe(() => instancesService.listInstances()));
   ipcMain.handle(IPC_CHANNELS.createInstance, safe((_e, input: CreateInstanceInput) => instancesService.createInstance(input)));
@@ -332,6 +336,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(
     IPC_CHANNELS.applySkin,
     safe((_e, accountId: string, skinId: string) => skinsService.applySkin(accountId, skinId))
+  );
+  ipcMain.handle(
+    IPC_CHANNELS.getAccountSkinTexture,
+    safe((_e, accountId: string) => skinsService.getAccountSkinTexture(accountId))
   );
 
   ipcMain.on(IPC_CHANNELS.windowMinimize, () => getWindow()?.minimize());

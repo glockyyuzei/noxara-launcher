@@ -349,6 +349,7 @@ export interface ModpackImportInput {
  * reports its real progress through this single global channel. */
 export type ActivityType =
   | "minecraft" // Minecraft version download, libraries, assets, client files
+  | "java" // Mojang bundled Java runtime download/install
   | "mod" // mod download / install / update
   | "content" // resource pack / shader download / install
   | "modpack" // modpack download / install / import / export
@@ -551,6 +552,16 @@ export interface SkinRecord {
   createdAt: string;
 }
 
+/** The texture the 3D skin viewer should render for an account: for Microsoft accounts
+ * this is the account's real current Mojang skin (fetched fresh); for offline accounts
+ * it's their locally stored skin. `null` from the API means no skin is available and the
+ * viewer shows its default placeholder. */
+export interface AccountSkinTexture {
+  dataUrl: string;
+  model: "classic" | "slim";
+  source: "library" | "mojang";
+}
+
 /** Request/response shape for every invoke-style channel. */
 export interface NoxaraApi {
   // Minecraft metadata
@@ -560,6 +571,10 @@ export interface NoxaraApi {
   // Java
   detectJava(): Promise<JavaInstallation[]>;
   testJavaPath(path: string): Promise<JavaInstallation | null>;
+  /** Downloads/installs Mojang's official bundled Java runtime for a major version
+   * (e.g. 8/17/21) into the launcher's managed Java directory. Progress is reported
+   * through the global activity system. Returns the detected installation. */
+  ensureJavaRuntime(majorVersion: number): Promise<JavaInstallation>;
 
   // Instances
   listInstances(): Promise<InstanceRecord[]>;
@@ -664,6 +679,9 @@ export interface NoxaraApi {
   getAccountSkin(accountId: string): Promise<SkinRecord | null>;
   setAccountSkin(accountId: string, skinId: string | null): Promise<void>;
   applySkin(accountId: string, skinId: string): Promise<void>;
+  /** Resolves the account's actual current skin texture for the 3D viewer (Mojang's
+   * current skin for Microsoft accounts, the stored skin for offline accounts). */
+  getAccountSkinTexture(accountId: string): Promise<AccountSkinTexture | null>;
 
   // Window controls
   windowMinimize(): void;
@@ -676,6 +694,7 @@ export const IPC_CHANNELS = {
   getRecommendedJava: "noxara:mojang:getRecommendedJava",
   detectJava: "noxara:java:detectAll",
   testJavaPath: "noxara:java:testPath",
+  ensureJavaRuntime: "noxara:java:ensureRuntime",
   listInstances: "noxara:instances:list",
   createInstance: "noxara:instances:create",
   deleteInstance: "noxara:instances:delete",
@@ -738,6 +757,7 @@ export const IPC_CHANNELS = {
   getAccountSkin: "noxara:skins:getForAccount",
   setAccountSkin: "noxara:skins:setForAccount",
   applySkin: "noxara:skins:apply",
+  getAccountSkinTexture: "noxara:skins:getTexture",
   windowMinimize: "noxara:window:minimize",
   windowMaximize: "noxara:window:maximize",
   windowClose: "noxara:window:close",

@@ -16,15 +16,17 @@ import {
   AlertTriangle,
   XCircle,
   Wrench,
+  Terminal,
 } from "lucide-react";
 import type { InstanceHealthReport, InstanceHealthCheck, InstanceRecord, ModrinthSearchHit } from "@shared/types/ipc";
 import { useLaunchStore, launchInstance } from "../stores/useLaunchStore";
+import type { ConsoleLine } from "../stores/useLaunchStore";
 import { useModStore } from "../stores/useModStore";
 import { InstanceCover } from "../components/InstanceCover";
 import { ModDetailsModal } from "../components/ModDetailsModal";
 import { toast } from "../stores/useToastStore";
 
-const TABS = ["Overview", "Mods", "Logs"] as const;
+const TABS = ["Overview", "Mods", "Console"] as const;
 
 export default function InstanceDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -33,12 +35,14 @@ export default function InstanceDetailPage() {
   const [tab, setTab] = useState<(typeof TABS)[number]>("Overview");
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [followOutput, setFollowOutput] = useState(true);
   const logRef = useRef<HTMLDivElement>(null);
 
   const logs = useLaunchStore((s) => (id ? s.logsByInstance[id] ?? [] : []));
   const running = useLaunchStore((s) => (id ? s.runningInstanceIds.has(id) : false));
   const launching = useLaunchStore((s) => (id ? s.launchingInstanceIds.has(id) : false));
   const kill = useLaunchStore((s) => s.kill);
+  const clearLog = useLaunchStore((s) => s.clearLog);
 
   const [health, setHealth] = useState<InstanceHealthReport | null>(null);
   const [checkingHealth, setCheckingHealth] = useState(false);
@@ -76,15 +80,17 @@ export default function InstanceDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [logs]);
+    // Only auto-scroll when the user has "Follow output" enabled — disabling it lets
+    // them scroll back through history without the stream yanking the view down.
+    if (followOutput) logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [logs, followOutput]);
 
   async function handlePlay() {
     if (!id) return;
     setError(null);
     try {
       await launchInstance(id);
-      setTab("Logs");
+      setTab("Console");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to launch");
     }
@@ -280,16 +286,71 @@ export default function InstanceDetailPage() {
 
       {tab === "Mods" && instance && <InstanceModsTab instance={instance} />}
 
-      {tab === "Logs" && (
-        <div
-          ref={logRef}
-          className="yz-card p-3 h-96 overflow-y-auto font-mono text-xs text-noxara-subtle whitespace-pre-wrap"
-        >
-          {logs.length === 0 ? (
-            <p className="text-noxara-muted">No output yet. Launch the instance to see live logs here.</p>
-          ) : (
-            logs.map((line, idx) => <div key={idx}>{line}</div>)
-          )}
+      {tab === "Console" && (
+        <div className="yz-card overflow-hidden">
+          <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-noxara-border">
+            <div className="flex items-center gap-2 text-xs min-w-0">
+              <Terminal size={13} className="text-noxara-subtle shrink-0" />
+              <span className="font-medium text-noxara-text">Console</span>
+              {running ? (
+                <span className="flex items-center gap-1 text-noxara-success">
+                  <span className="w-1.5 h-1.5 rounded-full bg-noxara-success animate-pulse" /> live
+                </span>
+              ) : launching ? (
+                <span className="text-noxara-muted">starting…</span>
+              ) : null}
+              <span className="text-noxara-muted truncate hidden sm:inline">
+                {logs.length} line{logs.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={() => setFollowOutput((f) => !f)}
+                className={`text-xs px-2 py-1 rounded transition-colors ${
+                  followOutput
+                    ? "bg-noxara-elevated text-noxara-text"
+                    : "text-noxara-muted hover:text-noxara-text"
+                }`}
+                title="Toggle auto-scroll to the latest output"
+              >
+                Follow
+              </button>
+              <button
+                onClick={() =>
+                  navigator.clipboard.writeText(logs.map((e) => e.line).join("\n"))
+                }
+                disabled={logs.length === 0}
+                className="text-xs px-2 py-1 rounded text-noxara-muted hover:text-noxara-text disabled:opacity-40"
+                title="Copy all console output"
+              >
+                <Copy size={12} /> Copy
+              </button>
+              <button
+                onClick={() => id && clearLog(id)}
+                disabled={logs.length === 0}
+                className="text-xs px-2 py-1 rounded text-noxara-muted hover:text-noxara-error disabled:opacity-40"
+                title="Clear console"
+              >
+                <Trash2 size={12} /> Clear
+              </button>
+            </div>
+          </div>
+          <div
+            ref={logRef}
+            className="h-96 overflow-y-auto font-mono text-xs whitespace-pre-wrap px-3 py-2 bg-noxara-black/40"
+          >
+            {logs.length === 0 ? (
+              <p className="text-noxara-muted">
+                No output yet. Launch the instance to see live console output here.
+              </p>
+            ) : (
+              logs.map((entry, idx) => (
+                <div key={idx} className={consoleLineClass(entry)}>
+                  {entry.line}
+                </div>
+              ))
+            )}
+          </div>
         </div>
       )}
 
@@ -318,6 +379,17 @@ function InfoRow({ label, value }: { label: string; value: string }) {
       <div className="text-sm text-noxara-text">{value}</div>
     </div>
   );
+}
+
+/** Colors a console line: stderr and anything that looks like an error/exception is
+ * red, warnings amber, everything else the subtle base color. Launcher-originated
+ * messages are delivered as stderr so they're always highlighted. */
+function consoleLineClass(entry: ConsoleLine): string {
+  if (entry.stream === "stderr") return "text-noxara-error";
+  const text = entry.line;
+  if (/error|exception|severe|fatal|failed|at net\.|java\.lang/i.test(text)) return "text-noxara-error";
+  if (/warn|warning/i.test(text)) return "text-noxara-warning";
+  return "text-noxara-subtle";
 }
 
 const HEALTH_ACCENT: Record<InstanceHealthReport["status"], string> = {

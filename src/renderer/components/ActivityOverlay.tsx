@@ -4,6 +4,7 @@ import {
   Archive,
   CheckCircle2,
   ChevronDown,
+  Coffee,
   Download,
   Gamepad2,
   HardDrive,
@@ -23,6 +24,7 @@ import type { ActivityRecord, ActivityType } from "@shared/types/ipc";
 
 const TYPE_ICONS: Record<ActivityType, typeof Package> = {
   minecraft: Download,
+  java: Coffee,
   mod: Package,
   content: Image,
   modpack: Archive,

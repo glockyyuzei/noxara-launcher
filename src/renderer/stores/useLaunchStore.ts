@@ -9,13 +9,23 @@ import type { GameOutputPayload } from "@shared/types/ipc";
  * reconciliation against `listRunningInstances`, so a process killed manually or a
  * crash is reflected correctly even if an event was missed.
  */
+/** One console line: the game's raw output (with its stream so the console can color
+ * stderr/errors) or a launcher-originated message like "Launch failed: …". */
+export interface ConsoleLine {
+  line: string;
+  stream: "stdout" | "stderr";
+}
+
 interface LaunchState {
   launchingInstanceIds: Set<string>;
   runningInstanceIds: Set<string>;
-  logsByInstance: Record<string, string[]>;
+  logsByInstance: Record<string, ConsoleLine[]>;
   markLaunching: (instanceId: string, launching: boolean) => void;
   markRunning: (instanceId: string, running: boolean) => void;
   appendLog: (payload: GameOutputPayload) => void;
+  /** Appends a launcher-originated line (e.g. a launch failure) to an instance's
+   * console so errors the user must debug always appear there. */
+  appendSystemLine: (instanceId: string, line: string) => void;
   clearLog: (instanceId: string) => void;
   /** Kills the Minecraft process for an instance (no-op if nothing is running). */
   kill: (instanceId: string) => Promise<void>;
@@ -48,7 +58,18 @@ export const useLaunchStore = create<LaunchState>((set) => ({
       return {
         logsByInstance: {
           ...state.logsByInstance,
-          [payload.instanceId]: [...trimmed, payload.line],
+          [payload.instanceId]: [...trimmed, { line: payload.line, stream: payload.stream }],
+        },
+      };
+    }),
+  appendSystemLine: (instanceId, line) =>
+    set((state) => {
+      const existing = state.logsByInstance[instanceId] ?? [];
+      const trimmed = existing.length > 2000 ? existing.slice(-2000) : existing;
+      return {
+        logsByInstance: {
+          ...state.logsByInstance,
+          [instanceId]: [...trimmed, { line, stream: "stderr" }],
         },
       };
     }),
@@ -92,9 +113,12 @@ export const useLaunchStore = create<LaunchState>((set) => ({
  * Guards against double-launching: an instance that's already launching or already
  * running is left alone rather than spawning a second JVM. */
 export async function launchInstance(id: string, extraGameArgs?: string[]): Promise<void> {
-  const { markLaunching, markRunning, launchingInstanceIds, runningInstanceIds } = useLaunchStore.getState();
+  const { markLaunching, markRunning, launchingInstanceIds, runningInstanceIds, appendSystemLine } =
+    useLaunchStore.getState();
   if (launchingInstanceIds.has(id) || runningInstanceIds.has(id)) {
-    throw new Error("This instance is already running.");
+    const alreadyRunning = new Error("This instance is already running.");
+    appendSystemLine(id, `[launcher] ${alreadyRunning.message}`);
+    throw alreadyRunning;
   }
   markLaunching(id, true);
   try {
@@ -106,6 +130,10 @@ export async function launchInstance(id: string, extraGameArgs?: string[]): Prom
   } catch (e) {
     markLaunching(id, false);
     markRunning(id, false);
+    const message = e instanceof Error ? e.message : "Failed to launch";
+    // Surface the failure in the instance's console so it's visible right where the
+    // user would look for the error, not just as a toast.
+    appendSystemLine(id, `[launcher] Launch failed: ${message}`);
     throw e;
   }
 }

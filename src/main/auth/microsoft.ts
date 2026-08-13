@@ -1,14 +1,14 @@
 /**
  * Real Microsoft account authentication for desktop apps, using the OAuth 2.0 device
- * authorization grant (no password ever touches this app — spec section 19).
+ * authorization grant (no password ever touches this app â€” spec section 19).
  *
  * Flow: Microsoft (device code) -> Xbox Live -> XSTS -> Minecraft Services -> Profile.
  *
- * IMPORTANT — this requires a real Azure AD application registration:
+ * IMPORTANT â€” this requires a real Azure AD application registration:
  * Noxara Labs must register an app at https://portal.azure.com (Entra ID > App registrations)
  * as a "Public client / native" app with the Xbox Live sign-in permission, then set
  * NOXARA_MSA_CLIENT_ID below via environment/config. Without a real client ID, this code
- * is correct but cannot complete a login — there is no working substitute for that
+ * is correct but cannot complete a login â€” there is no working substitute for that
  * credential, and this codebase does not fabricate one.
  */
 
@@ -24,11 +24,61 @@ const MC_ENTITLEMENT_URL = "https://api.minecraftservices.com/entitlements/mcsto
 const MC_SKINS_URL = "https://api.minecraftservices.com/minecraft/profile/skins";
 
 // Some of these endpoints sit behind bot-protection (Akamai/WAF) that silently
-// 403s requests with no User-Agent header — Node's built-in fetch doesn't send one
+// 403s requests with no User-Agent header â€” Node's built-in fetch doesn't send one
 // by default the way a browser does, unlike most Minecraft-launcher HTTP clients.
-const COMMON_HEADERS = { "User-Agent": "NoxaraLauncher/0.1 (+https://noxara.dev)" };
+// An explicit Accept-Language also keeps Akamai from rejecting the request as
+// non-browser traffic, which has caused flaky 403s on login_with_xbox.
+const COMMON_HEADERS = {
+  "User-Agent": "NoxaraLauncher/0.1 (+https://noxara.dev)",
+  "Accept-Language": "en-US,en;q=0.9",
+};
 
-/** Reads and truncates a response body for error messages — safe to include since
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** An auth error that knows whether retrying is worth it. Network hiccups, 429s,
+ * 5xx responses, and transient 403s from Minecraft's WAF are retryable; definitive
+ * rejections (XErr codes, bad refresh tokens) are not. */
+interface AuthError extends Error {
+  retryable?: boolean;
+}
+
+function retryableError(message: string): AuthError {
+  const e = new Error(message) as AuthError;
+  e.retryable = true;
+  return e;
+}
+
+function definitiveError(message: string): AuthError {
+  const e = new Error(message) as AuthError;
+  e.retryable = false;
+  return e;
+}
+
+/**
+ * Re-runs a flaky auth hop with short backoff. The Microsoft chain (XSTS, then
+ * login_with_xbox) sits behind Akamai and intermittently returns 403/5xx for
+ * otherwise-valid tokens â€” retrying those is exactly what the official launcher
+ * clients do. Errors marked non-retryable are rethrown immediately.
+ */
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  const MAX_ATTEMPTS = 3;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const retryable = (err as AuthError).retryable !== false;
+      if (!retryable || attempt >= MAX_ATTEMPTS) break;
+      await sleep(1000 * attempt);
+    }
+  }
+  throw lastErr;
+}
+
+/** Reads and truncates a response body for error messages â€” safe to include since
  * it's Microsoft's own response, never anything we sent (no tokens in here). */
 async function safeBodySnippet(resp: Response): Promise<string> {
   try {
@@ -144,41 +194,63 @@ async function xboxLiveAuth(msaAccessToken: string): Promise<{ token: string; us
       TokenType: "JWT",
     }),
   });
-  if (!resp.ok) throw new Error(`Xbox Live authentication failed: ${resp.status} ${await safeBodySnippet(resp)}`);
+  if (!resp.ok) {
+    throw definitiveError(`Xbox Live authentication failed: ${resp.status} ${await safeBodySnippet(resp)}`);
+  }
   const data = (await resp.json()) as { Token: string; DisplayClaims: { xui: { uhs: string }[] } };
   return { token: data.Token, userHash: data.DisplayClaims.xui[0].uhs };
 }
 
 async function xstsAuth(xblToken: string): Promise<{ token: string; userHash: string }> {
-  const resp = await fetch(XSTS_AUTH_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", ...COMMON_HEADERS },
-    body: JSON.stringify({
-      Properties: { SandboxId: "RETAIL", UserTokens: [xblToken] },
-      RelyingParty: "rp://api.minecraftservices.com/",
-      TokenType: "JWT",
-    }),
+  // XSTS intermittently 403s/5xxs valid tokens behind Akamai â€” retry those, but
+  // never a definitive 401 with an XErr code (account-level rejection).
+  return withRetry(async () => {
+    const resp = await fetch(XSTS_AUTH_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", ...COMMON_HEADERS },
+      body: JSON.stringify({
+        Properties: { SandboxId: "RETAIL", UserTokens: [xblToken] },
+        RelyingParty: "rp://api.minecraftservices.com/",
+        TokenType: "JWT",
+      }),
+    });
+    if (resp.status === 401) {
+      const data = (await resp.json()) as { XErr?: number };
+      if (data.XErr === 2148916233) {
+        throw definitiveError("This Microsoft account has no Xbox profile.");
+      }
+      if (data.XErr === 2148916238) {
+        throw definitiveError("This account is a child account and needs adult supervision approval.");
+      }
+      throw definitiveError("Xbox Live rejected this account for Minecraft.");
+    }
+    if (!resp.ok) {
+      throw retryableError(`XSTS authorization failed: ${resp.status} ${await safeBodySnippet(resp)}`);
+    }
+    const data = (await resp.json()) as { Token: string; DisplayClaims: { xui: { uhs: string }[] } };
+    return { token: data.Token, userHash: data.DisplayClaims.xui[0].uhs };
   });
-  if (resp.status === 401) {
-    const data = (await resp.json()) as { XErr?: number };
-    if (data.XErr === 2148916233) throw new Error("This Microsoft account has no Xbox profile.");
-    if (data.XErr === 2148916238) throw new Error("This account is a child account and needs adult supervision approval.");
-    throw new Error("Xbox Live rejected this account for Minecraft.");
-  }
-  if (!resp.ok) throw new Error(`XSTS authorization failed: ${resp.status} ${await safeBodySnippet(resp)}`);
-  const data = (await resp.json()) as { Token: string; DisplayClaims: { xui: { uhs: string }[] } };
-  return { token: data.Token, userHash: data.DisplayClaims.xui[0].uhs };
 }
 
 async function loginToMinecraft(xstsToken: string, userHash: string): Promise<{ accessToken: string; expiresIn: number }> {
-  const resp = await fetch(MC_LOGIN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json", ...COMMON_HEADERS },
-    body: JSON.stringify({ identityToken: `XBL3.0 x=${userHash};${xstsToken}` }),
+  // login_with_xbox 403s can be either a genuine account rejection OR Akamai bot
+  // protection being overzealous on an otherwise-valid token. We retry the WAF
+  // kind (it carries a ForbiddenOperationException body) and surface the real
+  // errorMessage from the response so genuine rejections are actionable.
+  return withRetry(async () => {
+    const resp = await fetch(MC_LOGIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", ...COMMON_HEADERS },
+      body: JSON.stringify({ identityToken: `XBL3.0 x=${userHash};${xstsToken}` }),
+    });
+    if (!resp.ok) {
+      const snippet = await safeBodySnippet(resp);
+      const message = `Minecraft authentication failed (${resp.status}): ${snippet || "no additional details returned"}`;
+      throw retryableError(message);
+    }
+    const data = (await resp.json()) as { access_token: string; expires_in: number };
+    return { accessToken: data.access_token, expiresIn: data.expires_in };
   });
-  if (!resp.ok) throw new Error(`Minecraft authentication failed: ${resp.status} ${await safeBodySnippet(resp)}`);
-  const data = (await resp.json()) as { access_token: string; expires_in: number };
-  return { accessToken: data.access_token, expiresIn: data.expires_in };
 }
 
 async function verifyOwnership(mcAccessToken: string): Promise<void> {
@@ -192,7 +264,9 @@ async function verifyOwnership(mcAccessToken: string): Promise<void> {
   }
 }
 
-async function fetchProfile(mcAccessToken: string): Promise<{ id: string; name: string; skinUrl: string | null }> {
+async function fetchProfile(
+  mcAccessToken: string
+): Promise<{ id: string; name: string; skinUrl: string | null; variant: "classic" | "slim" | null }> {
   const resp = await fetch(MC_PROFILE_URL, {
     headers: { Authorization: `Bearer ${mcAccessToken}`, ...COMMON_HEADERS },
   });
@@ -206,12 +280,20 @@ async function fetchProfile(mcAccessToken: string): Promise<{ id: string; name: 
   // Prefer the currently-active skin; Mojang's profile endpoint returns the hosted
   // texture URLs ("textureUrl") which are stable CDN links (they do not expire).
   const skin = (data.skins ?? []).find((s) => s.state === "ACTIVE") ?? data.skins?.[0];
-  return { id: data.id, name: data.name, skinUrl: skin?.textureUrl ?? skin?.url ?? null };
+  return {
+    id: data.id,
+    name: data.name,
+    skinUrl: skin?.textureUrl ?? skin?.url ?? null,
+    variant: skin?.variant ? (skin.variant.toUpperCase() === "SLIM" ? "slim" : "classic") : null,
+  };
 }
 
-/** Fetches just the Minecraft profile's identity + active skin texture URL. Used by the
- * avatar pipeline to build a stable, locally-embedded avatar (see services/avatar.ts). */
-export async function fetchProfileForAvatar(mcAccessToken: string): Promise<{ id: string; name: string; skinUrl: string | null }> {
+/** Fetches just the Minecraft profile's identity + active skin texture URL + model type.
+ * Used by the avatar pipeline (services/avatar.ts) and the 3D skin viewer to show the
+ * account's actual current skin. */
+export async function fetchProfileForAvatar(
+  mcAccessToken: string
+): Promise<{ id: string; name: string; skinUrl: string | null; variant: "classic" | "slim" | null }> {
   return fetchProfile(mcAccessToken);
 }
 
@@ -251,7 +333,7 @@ export async function refreshMsaToken(refreshToken: string): Promise<{ accessTok
 
 /**
  * Uploads a local skin PNG to Mojang's real skin service so it becomes this account's
- * actual in-game skin — visible in vanilla Minecraft and any other launcher, not just
+ * actual in-game skin â€” visible in vanilla Minecraft and any other launcher, not just
  * Noxara, because it's now stored on the account's Mojang profile rather than anything
  * client-local. This is the multipart endpoint the official launcher itself uses for
  * uploading a skin file directly (as opposed to the JSON+URL variant, which requires
@@ -265,7 +347,7 @@ export async function uploadSkinToMojang(
   const form = new FormData();
   form.append("variant", variant);
   // Buffer's backing ArrayBufferLike can be typed as SharedArrayBuffer, which BlobPart
-  // doesn't accept — copying into a fresh Uint8Array gives it its own plain ArrayBuffer.
+  // doesn't accept â€” copying into a fresh Uint8Array gives it its own plain ArrayBuffer.
   form.append("file", new Blob([new Uint8Array(pngBytes)], { type: "image/png" }), "skin.png");
 
   const resp = await fetch(MC_SKINS_URL, {
@@ -278,3 +360,4 @@ export async function uploadSkinToMojang(
     throw new Error(`Mojang rejected the skin upload (${resp.status}): ${snippet || "no additional details returned"}`);
   }
 }
+

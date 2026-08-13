@@ -14,7 +14,7 @@ import { getDb } from "./database";
 import { getActiveAccount, resolveMinecraftSession } from "./accounts";
 import { carrySkinIntoInstance } from "./skins";
 import { getSettings } from "./settings";
-import { detectJava } from "./java";
+import { detectJava, ensureJavaRuntime } from "./java";
 import { ensureVersionAssetsAndLibraries } from "./game-files";
 import { getFabricVersionDetail } from "./fabric";
 import { getQuiltVersionDetail } from "./quilt";
@@ -34,7 +34,12 @@ coreBridge.on("game.started", (p: { instanceId: string }) => {
   }
 });
 
-async function resolveJavaPath(instanceJavaPath: string | null, recommendedMajor: number): Promise<string> {
+async function resolveJavaPath(
+  instanceJavaPath: string | null,
+  recommendedMajor: number,
+  activityId: string,
+  javaComponent: string | null
+): Promise<string> {
   if (instanceJavaPath && fs.existsSync(instanceJavaPath)) return instanceJavaPath;
 
   const settings = getSettings();
@@ -48,6 +53,22 @@ async function resolveJavaPath(instanceJavaPath: string | null, recommendedMajor
 
   const newest = installs.filter((j) => j.majorVersion >= recommendedMajor).sort((a, b) => a.majorVersion - b.majorVersion)[0];
   if (newest) return newest.path;
+
+  // No compatible Java installed anywhere — automatically install Mojang's official
+  // bundled runtime (same one the vanilla launcher ships) so the user can launch
+  // without installing anything. Progress streams under the launch activity.
+  progressActivity(activityId, {}, "downloading", { description: `Downloading Java ${recommendedMajor} runtime` });
+  try {
+    const managedPath = await ensureJavaRuntime(javaComponent ?? "", recommendedMajor, activityId);
+    if (managedPath && fs.existsSync(managedPath)) {
+      return managedPath;
+    }
+  } catch (err) {
+    throw new Error(
+      `No compatible Java was found and the automatic Java ${recommendedMajor} download failed: ` +
+        `${err instanceof Error ? err.message : "unknown error"}`
+    );
+  }
 
   throw new Error(
     `No installed Java runtime satisfies Minecraft's requirement (Java ${recommendedMajor}+). ` +
@@ -106,6 +127,11 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     }>("mojang.getVersionDetail", { versionId: instance.minecraft_version });
 
     let versionDetail: any = vanillaDetail;
+    // The exact runtime component Mojang's version JSON requests (e.g. "java-runtime-21").
+    // Loader-merged details inherit javaVersion from the vanilla base, so reading it
+    // from the vanilla detail is authoritative for every loader path.
+    const javaComponent =
+      (vanillaDetail?.javaVersion as { component?: string } | undefined)?.component ?? null;
 
     if (instance.loader === "fabric") {
       if (!instance.loader_version) {
@@ -136,7 +162,7 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
         nativesDir,
         activityId
       );
-      const javaPathForInstall = await resolveJavaPath(instance.java_path, recommendedJavaMajor);
+      const javaPathForInstall = await resolveJavaPath(instance.java_path, recommendedJavaMajor, activityId, javaComponent);
 
       const loaderName = instance.loader === "forge" ? "Forge" : "NeoForge";
       const loaderActivityId = randomUUID();
@@ -182,7 +208,7 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     );
     progressActivity(activityId, {}, "verifying", { description: "Preparing launch" });
 
-    const javaPath = await resolveJavaPath(instance.java_path, recommendedJavaMajor);
+    const javaPath = await resolveJavaPath(instance.java_path, recommendedJavaMajor, activityId, javaComponent);
     const account = await resolveAccountForLaunch();
 
     db.prepare("UPDATE instances SET last_played_at = ? WHERE id = ?").run(new Date().toISOString(), instanceId);

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import { TitleBar } from "./layouts/TitleBar";
 import { Sidebar } from "./layouts/Sidebar";
@@ -18,9 +18,12 @@ import ModpacksPage from "./pages/ModpacksPage";
 import ResourcePacksPage from "./pages/ResourcePacksPage";
 import ShadersPage from "./pages/ShadersPage";
 import ServersPage from "./pages/ServersPage";
-import SkinsPage from "./pages/SkinsPage";
 import DownloadsPage from "./pages/DownloadsPage";
 import SettingsPage from "./pages/SettingsPage";
+
+// The 3D skin viewer pulls in three.js (~600 kB), so SkinsPage is loaded on demand to
+// keep it out of the initial bundle.
+const SkinsPage = lazy(() => import("./pages/SkinsPage"));
 
 export default function App() {
   const appendLog = useLaunchStore((s) => s.appendLog);
@@ -79,21 +82,29 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         <Sidebar />
         <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden">
-          <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/instances" element={<InstancesPage />} />
-            <Route path="/instances/:id" element={<InstanceDetailPage />} />
-            <Route path="/accounts" element={<AccountsPage />} />
-            <Route path="/java" element={<JavaPage />} />
-            <Route path="/modpacks" element={<ModpacksPage />} />
-            <Route path="/mods" element={<ModsPage />} />
-            <Route path="/resourcepacks" element={<ResourcePacksPage />} />
-            <Route path="/shaders" element={<ShadersPage />} />
-            <Route path="/servers" element={<ServersPage />} />
-            <Route path="/skins" element={<SkinsPage />} />
-            <Route path="/downloads" element={<DownloadsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Routes>
+          <Suspense
+            fallback={
+              <div className="flex h-full items-center justify-center p-8">
+                <span className="h-5 w-5 animate-spin rounded-full border-2 border-noxara-border border-t-noxara-text" />
+              </div>
+            }
+          >
+            <Routes>
+              <Route path="/" element={<HomePage />} />
+              <Route path="/instances" element={<InstancesPage />} />
+              <Route path="/instances/:id" element={<InstanceDetailPage />} />
+              <Route path="/accounts" element={<AccountsPage />} />
+              <Route path="/java" element={<JavaPage />} />
+              <Route path="/modpacks" element={<ModpacksPage />} />
+              <Route path="/mods" element={<ModsPage />} />
+              <Route path="/resourcepacks" element={<ResourcePacksPage />} />
+              <Route path="/shaders" element={<ShadersPage />} />
+              <Route path="/servers" element={<ServersPage />} />
+              <Route path="/skins" element={<SkinsPage />} />
+              <Route path="/downloads" element={<DownloadsPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+            </Routes>
+          </Suspense>
         </main>
       </div>
       <ActivityOverlay />

@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, Coffee } from "lucide-react";
+import { RefreshCw, Coffee, Download } from "lucide-react";
 import type { JavaInstallation } from "@shared/types/ipc";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
+
+/** Majors Noxara can auto-install via Mojang's official bundled runtimes. */
+const INSTALLABLE_MAJORS = [8, 17, 21] as const;
 
 export default function JavaPage() {
   const [installs, setInstalls] = useState<JavaInstallation[]>([]);
   const [loading, setLoading] = useState(true);
   const [customPath, setCustomPath] = useState("");
   const [customResult, setCustomResult] = useState<JavaInstallation | null | "invalid">(null);
+  const [installing, setInstalling] = useState<number | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
 
   function refresh() {
     setLoading(true);
@@ -22,6 +27,22 @@ export default function JavaPage() {
   async function testCustomPath() {
     const result = await window.noxara.testJavaPath(customPath);
     setCustomResult(result ?? "invalid");
+  }
+
+  async function installMajor(major: number) {
+    setInstalling(major);
+    setInstallError(null);
+    try {
+      // Progress shows in the global activity overlay; the returned installation is
+      // also verified and detected, so refresh the list to surface it here too.
+      const installed = await window.noxara.ensureJavaRuntime(major);
+      setCustomResult(installed);
+      refresh();
+    } catch (e) {
+      setInstallError(e instanceof Error ? e.message : "Java download failed");
+    } finally {
+      setInstalling(null);
+    }
   }
 
   return (
@@ -64,12 +85,12 @@ export default function JavaPage() {
           <EmptyState
             icon={Coffee}
             title="No Java installations detected"
-            description="Add a custom path below, or install Java manually."
+            description="Add a custom path below, or let Noxara download an official runtime automatically."
           />
         )}
       </div>
 
-      <div className="yz-card p-4">
+      <div className="yz-card p-4 mb-4">
         <label className="yz-label block mb-2">Add Custom Java Path</label>
         <div className="flex gap-2">
           <input
@@ -88,6 +109,39 @@ export default function JavaPage() {
             Verified: Java {customResult.majorVersion} ({customResult.version})
           </p>
         )}
+      </div>
+
+      <div className="yz-card p-4">
+        <div className="flex items-center gap-2 mb-1">
+          <Coffee size={15} className="text-noxara-subtle" />
+          <label className="text-sm font-semibold text-noxara-text">Automatic Java Install</label>
+        </div>
+        <p className="text-xs text-noxara-muted mb-3">
+          Noxara downloads Mojang's official bundled runtime — no manual setup needed.
+          You can also skip this entirely: launching an instance installs the right
+          Java automatically when none is found.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {INSTALLABLE_MAJORS.map((major) => (
+            <button
+              key={major}
+              onClick={() => installMajor(major)}
+              disabled={installing !== null}
+              className="yz-btn-secondary disabled:opacity-50"
+            >
+              {installing === major ? (
+                <>
+                  <RefreshCw size={14} className="animate-spin" /> Installing Java {major}…
+                </>
+              ) : (
+                <>
+                  <Download size={14} /> Install Java {major}
+                </>
+              )}
+            </button>
+          ))}
+        </div>
+        {installError && <p className="text-xs text-noxara-error mt-3">{installError}</p>}
       </div>
     </div>
   );

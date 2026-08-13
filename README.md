@@ -3,28 +3,67 @@
 A minimalist, monochrome Minecraft launcher by Noxara Labs. Electron + React + TypeScript +
 Tailwind renderer, talking over a secure typed IPC bridge to a privileged Electron main
 process, which drives a Rust native core (`noxara-core`) for all Minecraft-specific work
-(version resolution, Java detection, downloading, and launching).
+(version resolution, Java detection/installation, downloading, and launching).
 
-## Status: Phase 1 (of the roadmap in the original spec)
+## Features
 
-This is a **real, working foundation**, not a mockup:
+Everything below is real — there are no mockups or fake "coming soon" placeholders in the
+working flows.
 
-- ✅ Live Mojang version manifest + version detail fetch (cached), no hardcoded versions
-- ✅ Real Java detection across Windows/macOS/Linux common install locations + PATH
-- ✅ Real instance creation with an isolated directory per instance (mods/config/saves/etc.)
-- ✅ Real launch flow: downloads client jar + libraries + assets with sha1 verification,
-  resolves a compatible Java runtime, builds JVM args, spawns Java (no shell), streams
-  live console output back to the UI, detects crashes by exit code
-- ✅ SQLite persistence with a real migration runner
-- ✅ Offline profiles with vanilla-compatible offline UUID derivation
-- ✅ Microsoft auth: the full OAuth device-code → Xbox Live → XSTS → Minecraft Services
-  chain is implemented in `src/main/auth/microsoft.ts`, but is **inert until Noxara Labs
-  registers a real Azure AD application** and sets `NOXARA_MSA_CLIENT_ID`. There is no way
-  to fake this credential, so the UI clearly disables the button and explains why.
-- 🚧 Not yet built: Fabric/Forge/NeoForge/Quilt installers, Modrinth/CurseForge browsing,
-  mod dependency resolution, modpack import/export, resource packs, shaders, servers,
-  backups, instance sharing, dedup/sync. Each has an honest "not implemented yet" screen
-  in the UI rather than a fake one — see `ComingSoonPage.tsx`.
+**Instances**
+- Create instances for **Vanilla, Fabric, Forge, NeoForge, and Quilt** with isolated
+  directories (mods, configs, saves, screenshots live per-instance)
+- Live Mojang version manifest (cached, no hardcoded version lists) with snapshot toggle
+- Real launch pipeline: downloads client jar + libraries + assets with **sha1
+  verification**, resolves a compatible Java runtime, builds JVM args, spawns Java
+  directly (no shell), streams live console output, and detects crashes by exit code
+- **Instance Health check & one-click Repair** (client files, Java runtime, mods, deps)
+- Duplicate, export as a modpack, open folder, favorite, delete
+- **Per-instance console**: colored, live output with stderr/error highlighting, Copy /
+  Clear / Follow controls — launch failures are logged right into it
+
+**Content**
+- **Mods**: search & install from Modrinth with version/dependency resolution, update
+  checks, and uninstall
+- **Modpacks**: import/export Modrinth `.mrpack` archives; downloading a pack from the
+  Modrinth tab installs it as its own instance
+- **Resource Packs** and **Shaders**: browse, install, enable/disable per instance
+- Per-mod dependency resolution (required/optional/incompatible)
+
+**Accounts**
+- **Microsoft**: full OAuth 2.0 **device-code** flow → Xbox Live → XSTS → Minecraft
+  Services, with refresh-token rotation persisted in the OS credential store. No
+  password ever touches the app
+- **Offline** profiles with vanilla-compatible offline UUID derivation
+- Account avatars embedded from the real skin; profile refresh
+
+**Skins**
+- Local skin library (64×64 and legacy 64×32 PNG uploads, classic/slim model detection,
+  rename/delete)
+- **3D skin viewer** on every account: drag to rotate, scroll to zoom, classic/slim body
+  swap, idle/walk animation, second-layer (hat/jacket/sleeves) rendering and legacy
+  64×32 support
+- **Apply to Mojang** — uploads the skin to your real Mojang profile so it shows in
+  vanilla Minecraft and any other launcher, not just Noxara
+- Offline accounts carry their selected skin into the instance on every launch
+
+**Java**
+- Automatic detection across PATH, common install locations, and managed directories
+- **Automatic Java installation**: if no compatible Java exists, Noxara downloads
+  Mojang's own bundled official runtime (sha1-verified) on first launch — no manual
+  setup required. The Java manager also offers one-click installs of Java 8/17/21
+- Custom per-instance or default Java path, verified by probing the binary
+
+**Multiplayer**
+- Server list with icons, favorites, per-instance scoping, and live Minecraft
+  Server List Ping (latency, version, player count, MOTD, favicon)
+
+**General**
+- Global **Downloads/Activity manager**: real progress, cancel/retry for single-file
+  downloads, clearable history
+- First-class settings: game directory, memory per instance, window size, close-on-
+  launch behavior, concurrent download limit
+- SQLite persistence with a real migration runner
 
 ## Requirements
 
@@ -42,6 +81,11 @@ This is a **real, working foundation**, not a mockup:
   re-run `npm install`.
 - **Linux**: `libgtk-3-dev`, `libnss3-dev`, `build-essential`
 - **macOS**: Xcode Command Line Tools (`xcode-select --install`)
+
+> Microsoft sign-in requires Noxara Labs to have a registered Azure AD "public client"
+> application set via `NOXARA_MSA_CLIENT_ID` — without it, Microsoft sign-in is disabled
+> with a clear message (offline profiles still work). There is no way to fake this
+> credential.
 
 Native modules (`better-sqlite3`, `keytar`) compile against your system Node during
 `npm install`, then get rebuilt for Electron's bundled Node ABI automatically via the
@@ -81,8 +125,9 @@ Packaged binaries land in `release/`.
 src/main/        Electron main process (privileged): IPC handlers, services, auth, filesystem
 src/renderer/     React UI (sandboxed, no Node access — talks only through window.noxara)
 src/shared/       Types shared between main and renderer (the IPC contract)
-native/rust/      noxara-core: Mojang metadata, Java detection, downloads, launch, spoken
-                  over line-delimited JSON-RPC on stdio (see native/rust/src/protocol.rs)
+native/rust/      noxara-core: Mojang metadata, Java detection + runtime install, downloads,
+                  launch, spoken over line-delimited JSON-RPC on stdio
+                  (see native/rust/src/protocol.rs)
 database/migrations/  Versioned SQL migrations, applied automatically on startup
 ```
 
@@ -95,3 +140,5 @@ database/migrations/  Versioned SQL migrations, applied automatically on startup
   written to an event or file (see `redact()` in `native/rust/src/launch.rs`).
 - The JVM is spawned directly (`Command::new` in Rust / no `child_process` shell mode in Node)
   — arguments are passed as an array, never interpolated into a shell string.
+- Every file write, extraction, and deletion derived from user/network input is constrained
+  with `assertWithin` / `enclosed_name()` to block path traversal.

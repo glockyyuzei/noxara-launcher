@@ -41,7 +41,19 @@ export function versionsDir(): string {
 }
 
 export function javaDir(): string {
-  const dir = path.join(rootDir(), "java");
+  // Where Noxara-managed Java runtimes are installed. Deliberately mirrors the
+  // directories noxara-core's detection scans (native/rust/src/java.rs), so a runtime
+  // we auto-download also shows up in the Java manager's detection list. On Windows
+  // that's %APPDATA%\.noxara\java, on macOS ~/Library/Application Support/NoxaraLauncher/java,
+  // on Linux ~/.noxara/java.
+  let dir: string;
+  if (process.platform === "darwin") {
+    dir = path.join(app.getPath("appData"), "NoxaraLauncher", "java");
+  } else if (process.platform === "linux") {
+    dir = path.join(app.getPath("home"), ".noxara", "java");
+  } else {
+    dir = path.join(app.getPath("appData"), ".noxara", "java");
+  }
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

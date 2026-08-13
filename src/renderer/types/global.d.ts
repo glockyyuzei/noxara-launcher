@@ -40,6 +40,7 @@ import type {
   ServerPingResult,
   LauncherSettings,
   SkinRecord,
+  AccountSkinTexture,
   MicrosoftDeviceCodeInfo,
 } from "@shared/types/ipc";
 
@@ -50,6 +51,7 @@ declare global {
       getRecommendedJava(versionId: string): Promise<{ majorVersion: number }>;
       detectJava(): Promise<JavaInstallation[]>;
       testJavaPath(path: string): Promise<JavaInstallation | null>;
+      ensureJavaRuntime(majorVersion: number): Promise<JavaInstallation>;
       listInstances(): Promise<InstanceRecord[]>;
       createInstance(input: CreateInstanceInput): Promise<InstanceRecord>;
       deleteInstance(id: string): Promise<void>;
@@ -112,6 +114,7 @@ declare global {
       getAccountSkin(accountId: string): Promise<SkinRecord | null>;
       setAccountSkin(accountId: string, skinId: string | null): Promise<void>;
       applySkin(accountId: string, skinId: string): Promise<void>;
+      getAccountSkinTexture(accountId: string): Promise<AccountSkinTexture | null>;
       windowMinimize(): void;
       windowMaximize(): void;
       windowClose(): void;
