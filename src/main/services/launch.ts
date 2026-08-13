@@ -2,6 +2,9 @@
  * Orchestrates a real launch: resolve version metadata, ensure client jar + libraries +
  * assets are present (downloading/verifying via noxara-core), pick a Java runtime, then
  * hand off to noxara-core's launch.start which spawns the JVM and streams output.
+ *
+ * Every phase reports real progress through the global activity system (the launch
+ * itself, the file downloads, and any loader install that runs on first launch).
  */
 import path from "node:path";
 import fs from "node:fs";
@@ -12,162 +15,24 @@ import { getActiveAccount, resolveMinecraftSession } from "./accounts";
 import { carrySkinIntoInstance } from "./skins";
 import { getSettings } from "./settings";
 import { detectJava } from "./java";
-import { librariesDir, assetsDir, versionsDir } from "../filesystem/paths";
+import { ensureVersionAssetsAndLibraries } from "./game-files";
 import { getFabricVersionDetail } from "./fabric";
 import { getQuiltVersionDetail } from "./quilt";
 import { installForge } from "./forge";
 import { installNeoForge } from "./neoforge";
+import { startActivity, progressActivity, succeedActivity, failActivity } from "./activity";
 
-interface DownloadTaskInput {
-  url: string;
-  dest: string;
-  sha1?: string;
-  size?: number;
-  label: string;
-}
+/** Maps an instance id to the activity that represents its launch, so game.started
+ * can flip it to Completed exactly when the JVM actually comes up. */
+const launchActivityByInstance = new Map<string, string>();
 
-function currentOsRuleAllows(rules: unknown): boolean {
-  if (!Array.isArray(rules) || rules.length === 0) return true;
-  const os = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "osx" : "linux";
-  let allowed = false;
-  for (const rule of rules as Array<{ action?: string; os?: { name?: string } }>) {
-    const matches = !rule.os?.name || rule.os.name === os;
-    if (matches) allowed = rule.action !== "disallow";
+coreBridge.on("game.started", (p: { instanceId: string }) => {
+  const activityId = launchActivityByInstance.get(p.instanceId);
+  if (activityId) {
+    succeedActivity(activityId, { description: "Game started" });
+    launchActivityByInstance.delete(p.instanceId);
   }
-  return allowed;
-}
-
-function mavenCoordToRelPath(name: string): string {
-  const [group, artifact, version, classifier] = name.split(":");
-  const groupPath = group.replace(/\./g, "/");
-  const file = `${artifact}-${version}${classifier ? `-${classifier}` : ""}.jar`;
-  return path.join(groupPath, artifact, version, file);
-}
-
-function nativesClassifierForCurrentOs(natives: Record<string, string> | undefined): string | null {
-  if (!natives) return null;
-  const osKey = process.platform === "win32" ? "windows" : process.platform === "darwin" ? "osx" : "linux";
-  const raw = natives[osKey];
-  if (!raw) return null;
-  // Some older library entries use a "${arch}" placeholder (32/64-bit variants).
-  // We assume 64-bit, which covers the overwhelming majority of systems still able
-  // to run modern Minecraft/Java at all.
-  return raw.replace("${arch}", "64");
-}
-
-async function ensureVersionAssetsAndLibraries(
-  versionDetail: any,
-  nativesDir: string
-): Promise<{ clientJarPath: string; librariesDirPath: string; assetsDirPath: string }> {
-  const libDir = librariesDir();
-  const assetDir = assetsDir();
-  const verDir = path.join(versionsDir(), versionDetail.id);
-  fs.mkdirSync(verDir, { recursive: true });
-
-  const clientJarPath = path.join(verDir, `${versionDetail.id}.jar`);
-  const tasks: DownloadTaskInput[] = [
-    {
-      url: versionDetail.downloads.client.url,
-      dest: clientJarPath,
-      sha1: versionDetail.downloads.client.sha1,
-      size: versionDetail.downloads.client.size,
-      label: `Minecraft ${versionDetail.id} client`,
-    },
-  ];
-
-  const nativeJarPaths: string[] = [];
-
-  for (const lib of versionDetail.libraries ?? []) {
-    if (!currentOsRuleAllows(lib.rules)) continue;
-    const artifact = lib.downloads?.artifact;
-    if (artifact) {
-      const dest = path.join(libDir, mavenCoordToRelPath(lib.name));
-      tasks.push({
-        url: artifact.url,
-        dest,
-        sha1: artifact.sha1,
-        size: artifact.size,
-        label: lib.name,
-      });
-    }
-
-    // Older-style native libraries: a separate classifier jar (e.g. "natives-windows")
-    // that needs to be downloaded AND extracted into the instance's natives folder —
-    // it must never end up on the classpath itself.
-    const classifier = nativesClassifierForCurrentOs(lib.natives);
-    if (classifier && lib.downloads?.classifiers?.[classifier]) {
-      const nativeArtifact = lib.downloads.classifiers[classifier];
-      const dest = path.join(libDir, "natives-cache", `${lib.name.replace(/[:]/g, "_")}-${classifier}.jar`);
-      tasks.push({
-        url: nativeArtifact.url,
-        dest,
-        sha1: nativeArtifact.sha1,
-        size: nativeArtifact.size,
-        label: `${lib.name} (natives: ${classifier})`,
-      });
-      nativeJarPaths.push(dest);
-    }
-  }
-
-  // Asset index + objects
-  const assetIndexResp = await fetch(versionDetail.assetIndex.url);
-  const assetIndex = (await assetIndexResp.json()) as { objects: Record<string, { hash: string; size: number }> };
-  const objectsDir = path.join(assetDir, "objects");
-  const indexesDir = path.join(assetDir, "indexes");
-  fs.mkdirSync(indexesDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(indexesDir, `${versionDetail.assets}.json`),
-    JSON.stringify(assetIndex)
-  );
-
-  for (const [assetPath, obj] of Object.entries(assetIndex.objects)) {
-    const prefix = obj.hash.slice(0, 2);
-    tasks.push({
-      url: `https://resources.download.minecraft.net/${prefix}/${obj.hash}`,
-      dest: path.join(objectsDir, prefix, obj.hash),
-      sha1: obj.hash,
-      size: obj.size,
-      label: `asset:${assetPath}`,
-    });
-  }
-
-  const taskId = randomUUID();
-  // Full asset/library downloads can take several minutes on a slow connection —
-  // the default 30s IPC timeout was killing legitimate in-progress downloads.
-  const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-  const failed = await coreBridge.call<{ failed: string[] }>(
-    "downloads.batch",
-    { taskId, tasks, maxConcurrency: getSettings().maxConcurrentDownloads },
-    DOWNLOAD_TIMEOUT_MS
-  );
-  if (failed.failed.length > 0) {
-    // Only client jar, libraries, and natives are launch-critical. A handful of missed
-    // asset files (often background music tracks — large files, first candidates to
-    // time out on a slow connection) shouldn't block the whole launch; Minecraft
-    // tolerates a missing sound asset far better than it tolerates never starting.
-    const criticalFailures = failed.failed.filter((label) => !label.startsWith("asset:"));
-    const assetFailures = failed.failed.length - criticalFailures.length;
-
-    if (criticalFailures.length > 0) {
-      throw new Error(
-        `${criticalFailures.length} required file(s) failed to download; try Repair Instance. ` +
-          `(${criticalFailures.slice(0, 3).join(", ")}${criticalFailures.length > 3 ? "…" : ""})`
-      );
-    }
-    if (assetFailures > 0) {
-      console.warn(`[launch] ${assetFailures} non-critical asset(s) failed to download — continuing anyway`);
-    }
-  }
-
-  if (nativeJarPaths.length > 0) {
-    await coreBridge.call("natives.extract", {
-      jarPaths: nativeJarPaths,
-      destDir: nativesDir,
-    });
-  }
-
-  return { clientJarPath, librariesDirPath: libDir, assetsDirPath: assetDir };
-}
+});
 
 async function resolveJavaPath(instanceJavaPath: string | null, recommendedMajor: number): Promise<string> {
   if (instanceJavaPath && fs.existsSync(instanceJavaPath)) return instanceJavaPath;
@@ -201,6 +66,7 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
   const instance = db.prepare("SELECT * FROM instances WHERE id = ?").get(instanceId) as
     | {
         id: string;
+        name: string;
         minecraft_version: string;
         loader: "vanilla" | "fabric" | "forge" | "neoforge" | "quilt";
         loader_version: string | null;
@@ -214,117 +80,163 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     | undefined;
   if (!instance) throw new Error(`instance ${instanceId} not found`);
 
-  const manifest = await coreBridge.call<{ versions: { id: string }[] }>("mojang.getVersionManifest", {
-    forceRefresh: false,
+  // The launch activity doubles as the taskId for the file downloads, so the batch
+  // progress events update this same record.
+  const activityId = randomUUID();
+  startActivity(activityId, {
+    type: "instance",
+    title: instance.name,
+    instanceId: instance.id,
+    description: "Preparing to launch",
+    status: "preparing",
   });
-  if (!manifest.versions.some((v) => v.id === instance.minecraft_version)) {
-    throw new Error(`Unknown Minecraft version: ${instance.minecraft_version}`);
-  }
+  launchActivityByInstance.set(instanceId, activityId);
 
-  const { detail: vanillaDetail, recommendedJavaMajor } = await coreBridge.call<{
-    detail: any;
-    recommendedJavaMajor: number;
-  }>("mojang.getVersionDetail", { versionId: instance.minecraft_version });
-
-  let versionDetail: any = vanillaDetail;
-
-  if (instance.loader === "fabric") {
-    if (!instance.loader_version) {
-      throw new Error("This instance has no Fabric Loader version recorded — try recreating it.");
+  try {
+    const manifest = await coreBridge.call<{ versions: { id: string }[] }>("mojang.getVersionManifest", {
+      forceRefresh: false,
+    });
+    if (!manifest.versions.some((v) => v.id === instance.minecraft_version)) {
+      throw new Error(`Unknown Minecraft version: ${instance.minecraft_version}`);
     }
-    ({ detail: versionDetail } = await getFabricVersionDetail(instance.minecraft_version, instance.loader_version));
-  } else if (instance.loader === "quilt") {
-    if (!instance.loader_version) {
-      throw new Error("This instance has no Quilt Loader version recorded — try recreating it.");
-    }
-    ({ detail: versionDetail } = await getQuiltVersionDetail(instance.minecraft_version, instance.loader_version));
-  } else if (instance.loader === "forge" || instance.loader === "neoforge") {
-    if (!instance.loader_version) {
-      throw new Error(
-        `This instance has no ${instance.loader === "forge" ? "Forge" : "NeoForge"} version recorded — try recreating it.`
+
+    const { detail: vanillaDetail, recommendedJavaMajor } = await coreBridge.call<{
+      detail: any;
+      recommendedJavaMajor: number;
+    }>("mojang.getVersionDetail", { versionId: instance.minecraft_version });
+
+    let versionDetail: any = vanillaDetail;
+
+    if (instance.loader === "fabric") {
+      if (!instance.loader_version) {
+        throw new Error("This instance has no Fabric Loader version recorded — try recreating it.");
+      }
+      progressActivity(activityId, {}, "preparing", { description: `Resolving Fabric ${instance.loader_version}` });
+      ({ detail: versionDetail } = await getFabricVersionDetail(instance.minecraft_version, instance.loader_version));
+    } else if (instance.loader === "quilt") {
+      if (!instance.loader_version) {
+        throw new Error("This instance has no Quilt Loader version recorded — try recreating it.");
+      }
+      progressActivity(activityId, {}, "preparing", { description: `Resolving Quilt ${instance.loader_version}` });
+      ({ detail: versionDetail } = await getQuiltVersionDetail(instance.minecraft_version, instance.loader_version));
+    } else if (instance.loader === "forge" || instance.loader === "neoforge") {
+      if (!instance.loader_version) {
+        throw new Error(
+          `This instance has no ${instance.loader === "forge" ? "Forge" : "NeoForge"} version recorded — try recreating it.`
+        );
+      }
+      // Forge/NeoForge's own installer tools need a real vanilla client jar to patch
+      // against (the MINECRAFT_JAR token) and a working JVM to run in — resolve both
+      // before running the installer pipeline. NeoForge's installer is Forge-derived
+      // and shares the same processor/install_profile format.
+      const nativesDir = path.join(instance.instance_dir, "natives");
+      progressActivity(activityId, {}, "downloading", { description: "Downloading Minecraft files" });
+      const { clientJarPath: vanillaClientJarPath } = await ensureVersionAssetsAndLibraries(
+        vanillaDetail,
+        nativesDir,
+        activityId
       );
+      const javaPathForInstall = await resolveJavaPath(instance.java_path, recommendedJavaMajor);
+
+      const loaderName = instance.loader === "forge" ? "Forge" : "NeoForge";
+      const loaderActivityId = randomUUID();
+      startActivity(loaderActivityId, {
+        type: "loader",
+        title: loaderName,
+        instanceId: instance.id,
+        description: `Installing ${loaderName} ${instance.loader_version}`,
+        status: "installing",
+      });
+      try {
+        const { detail } =
+          instance.loader === "forge"
+            ? await installForge(
+                loaderActivityId,
+                instance.minecraft_version,
+                instance.loader_version,
+                javaPathForInstall,
+                vanillaClientJarPath,
+                vanillaDetail
+              )
+            : await installNeoForge(
+                loaderActivityId,
+                instance.minecraft_version,
+                instance.loader_version,
+                javaPathForInstall,
+                vanillaClientJarPath,
+                vanillaDetail
+              );
+        succeedActivity(loaderActivityId, { description: `${loaderName} installed` });
+        versionDetail = detail;
+      } catch (err) {
+        failActivity(loaderActivityId, err instanceof Error ? err.message : `${loaderName} install failed`);
+        throw err;
+      }
     }
-    // Forge/NeoForge's own installer tools need a real vanilla client jar to patch
-    // against (the MINECRAFT_JAR token) and a working JVM to run in — resolve both
-    // before running the installer pipeline. NeoForge's installer is Forge-derived
-    // and shares the same processor/install_profile format.
-    const nativesDir = path.join(instance.instance_dir, "natives");
-    const { clientJarPath: vanillaClientJarPath } = await ensureVersionAssetsAndLibraries(vanillaDetail, nativesDir);
-    const javaPathForInstall = await resolveJavaPath(instance.java_path, recommendedJavaMajor);
 
-    const { detail } =
-      instance.loader === "forge"
-        ? await installForge(
-            randomUUID(),
-            instance.minecraft_version,
-            instance.loader_version,
-            javaPathForInstall,
-            vanillaClientJarPath,
-            vanillaDetail
-          )
-        : await installNeoForge(
-            randomUUID(),
-            instance.minecraft_version,
-            instance.loader_version,
-            javaPathForInstall,
-            vanillaClientJarPath,
-            vanillaDetail
-          );
-    versionDetail = detail;
-  }
+    progressActivity(activityId, {}, "downloading", { description: "Downloading Minecraft files" });
+    const { clientJarPath, librariesDirPath, assetsDirPath } = await ensureVersionAssetsAndLibraries(
+      versionDetail,
+      path.join(instance.instance_dir, "natives"),
+      activityId
+    );
+    progressActivity(activityId, {}, "verifying", { description: "Preparing launch" });
 
-  const { clientJarPath, librariesDirPath, assetsDirPath } = await ensureVersionAssetsAndLibraries(
-    versionDetail,
-    path.join(instance.instance_dir, "natives")
-  );
-  const javaPath = await resolveJavaPath(instance.java_path, recommendedJavaMajor);
-  const account = await resolveAccountForLaunch();
+    const javaPath = await resolveJavaPath(instance.java_path, recommendedJavaMajor);
+    const account = await resolveAccountForLaunch();
 
-  db.prepare("UPDATE instances SET last_played_at = ? WHERE id = ?").run(new Date().toISOString(), instanceId);
+    db.prepare("UPDATE instances SET last_played_at = ? WHERE id = ?").run(new Date().toISOString(), instanceId);
 
-  // Offline accounts with a selected skin carry that PNG into the game directory on
-  // every launch so the skin actually accompanies the profile the game uses — the
-  // file is verified byte-for-byte after the copy and persists in the instance until
-  // the next launch overwrites it. Best-effort: a skin problem must never block the
-  // game from starting, so a failure here is logged, not thrown.
-  const activeAccount = getActiveAccount();
-  if (activeAccount?.kind === "offline") {
-    const carried = carrySkinIntoInstance(activeAccount.id, instance.instance_dir);
-    if (carried.ok) {
-      console.log(`[launch] carried offline skin into ${carried.pngPath}`);
-    } else if (carried.reason) {
-      console.log(`[launch] offline skin not carried: ${carried.reason}`);
+    // Offline accounts with a selected skin carry that PNG into the game directory on
+    // every launch so the skin actually accompanies the profile the game uses — the
+    // file is verified byte-for-byte after the copy and persists in the instance until
+    // the next launch overwrites it. Best-effort: a skin problem must never block the
+    // game from starting, so a failure here is logged, not thrown.
+    const activeAccount = getActiveAccount();
+    if (activeAccount?.kind === "offline") {
+      const carried = carrySkinIntoInstance(activeAccount.id, instance.instance_dir);
+      if (carried.ok) {
+        console.log(`[launch] carried offline skin into ${carried.pngPath}`);
+      } else if (carried.reason) {
+        console.log(`[launch] offline skin not carried: ${carried.reason}`);
+      }
     }
-  }
 
-  const settings = getSettings();
-  return coreBridge.call<{ started: boolean }>("launch.start", {
-    instance: {
-      instance_id: instance.id,
-      instance_dir: instance.instance_dir,
-      natives_dir: path.join(instance.instance_dir, "natives"),
-      libraries_dir: librariesDirPath,
-      assets_dir: assetsDirPath,
-      client_jar: clientJarPath,
-      java_path: javaPath,
-      min_ram_mb: instance.min_ram_mb,
-      max_ram_mb: instance.max_ram_mb,
-      extra_jvm_args: instance.jvm_args ? instance.jvm_args.split(/\s+/).filter(Boolean) : [],
-      extra_game_args: [
-        ...(instance.game_args ? instance.game_args.split(/\s+/).filter(Boolean) : []),
-        ...(extraGameArgs ?? []),
-      ],
-      width: settings.launchWidth,
-      height: settings.launchHeight,
-    },
-    account: {
-      username: account.username,
-      uuid: account.uuid,
-      access_token: account.accessToken,
-      user_type: account.userType,
-    },
-    versionDetail,
-  });
+    const settings = getSettings();
+    const result = await coreBridge.call<{ started: boolean }>("launch.start", {
+      instance: {
+        instance_id: instance.id,
+        instance_dir: instance.instance_dir,
+        natives_dir: path.join(instance.instance_dir, "natives"),
+        libraries_dir: librariesDirPath,
+        assets_dir: assetsDirPath,
+        client_jar: clientJarPath,
+        java_path: javaPath,
+        min_ram_mb: instance.min_ram_mb,
+        max_ram_mb: instance.max_ram_mb,
+        extra_jvm_args: instance.jvm_args ? instance.jvm_args.split(/\s+/).filter(Boolean) : [],
+        extra_game_args: [
+          ...(instance.game_args ? instance.game_args.split(/\s+/).filter(Boolean) : []),
+          ...(extraGameArgs ?? []),
+        ],
+        width: settings.launchWidth,
+        height: settings.launchHeight,
+      },
+      account: {
+        username: account.username,
+        uuid: account.uuid,
+        access_token: account.accessToken,
+        user_type: account.userType,
+      },
+      versionDetail,
+    });
+    progressActivity(activityId, {}, "launching", { description: "Launching Minecraft" });
+    return result;
+  } catch (err) {
+    failActivity(activityId, err instanceof Error ? err.message : "Launch failed");
+    launchActivityByInstance.delete(instanceId);
+    throw err;
+  }
 }
 
 /** The set of instance ids whose Minecraft process is still alive on the Rust side. */

@@ -1,7 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Play, X, Copy, FolderOpen, Trash2, Search, RefreshCw, Loader2, Package } from "lucide-react";
-import type { InstanceRecord, ModrinthSearchHit } from "@shared/types/ipc";
+import {
+  Play,
+  X,
+  Copy,
+  FolderOpen,
+  Trash2,
+  Search,
+  RefreshCw,
+  Loader2,
+  Package,
+  ShieldCheck,
+  HeartPulse,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  Wrench,
+} from "lucide-react";
+import type { InstanceHealthReport, InstanceHealthCheck, InstanceRecord, ModrinthSearchHit } from "@shared/types/ipc";
 import { useLaunchStore, launchInstance } from "../stores/useLaunchStore";
 import { useModStore } from "../stores/useModStore";
 import { InstanceCover } from "../components/InstanceCover";
@@ -23,6 +39,36 @@ export default function InstanceDetailPage() {
   const running = useLaunchStore((s) => (id ? s.runningInstanceIds.has(id) : false));
   const launching = useLaunchStore((s) => (id ? s.launchingInstanceIds.has(id) : false));
   const kill = useLaunchStore((s) => s.kill);
+
+  const [health, setHealth] = useState<InstanceHealthReport | null>(null);
+  const [checkingHealth, setCheckingHealth] = useState(false);
+  const [repairing, setRepairing] = useState(false);
+
+  async function handleCheckHealth() {
+    if (!id) return;
+    setCheckingHealth(true);
+    try {
+      setHealth(await window.noxara.checkInstanceHealth(id));
+    } catch (e) {
+      toast.error("Health check failed", e instanceof Error ? e.message : undefined);
+    } finally {
+      setCheckingHealth(false);
+    }
+  }
+
+  async function handleRepair() {
+    if (!id) return;
+    setRepairing(true);
+    try {
+      const report = await window.noxara.repairInstance(id);
+      setHealth(report);
+      toast.success("Instance repaired");
+    } catch (e) {
+      toast.error("Repair failed", e instanceof Error ? e.message : undefined);
+    } finally {
+      setRepairing(false);
+    }
+  }
 
   useEffect(() => {
     if (!id) return;
@@ -214,12 +260,21 @@ export default function InstanceDetailPage() {
       </div>
 
       {tab === "Overview" && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <InfoRow label="Java" value={instance.javaPath ?? "Auto-detected"} />
-          <InfoRow label="Loader" value={loaderLabel(instance.loader, instance.loaderVersion)} />
-          <InfoRow label="Memory" value={`${instance.minRamMb} – ${instance.maxRamMb} MB`} />
-          <InfoRow label="Created" value={new Date(instance.createdAt).toLocaleDateString()} />
-          <InfoRow label="Last Played" value={instance.lastPlayedAt ? new Date(instance.lastPlayedAt).toLocaleString() : "Never"} />
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <InfoRow label="Java" value={instance.javaPath ?? "Auto-detected"} />
+            <InfoRow label="Loader" value={loaderLabel(instance.loader, instance.loaderVersion)} />
+            <InfoRow label="Memory" value={`${instance.minRamMb} – ${instance.maxRamMb} MB`} />
+            <InfoRow label="Created" value={new Date(instance.createdAt).toLocaleDateString()} />
+            <InfoRow label="Last Played" value={instance.lastPlayedAt ? new Date(instance.lastPlayedAt).toLocaleString() : "Never"} />
+          </div>
+          <HealthCard
+            health={health}
+            checking={checkingHealth}
+            repairing={repairing}
+            onCheck={handleCheckHealth}
+            onRepair={handleRepair}
+          />
         </div>
       )}
 
@@ -261,6 +316,107 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div className="yz-card px-4 py-3">
       <div className="yz-label mb-1">{label}</div>
       <div className="text-sm text-noxara-text">{value}</div>
+    </div>
+  );
+}
+
+const HEALTH_ACCENT: Record<InstanceHealthReport["status"], string> = {
+  healthy: "text-noxara-success border-noxara-success/30 bg-noxara-success/5",
+  attention: "text-noxara-warning border-noxara-warning/30 bg-noxara-warning/5",
+  broken: "text-noxara-error border-noxara-error/30 bg-noxara-error/5",
+};
+
+const CHECK_ICON: Record<InstanceHealthCheck["status"], typeof CheckCircle2> = {
+  ok: CheckCircle2,
+  warning: AlertTriangle,
+  error: XCircle,
+};
+
+const CHECK_COLOR: Record<InstanceHealthCheck["status"], string> = {
+  ok: "text-noxara-success",
+  warning: "text-noxara-warning",
+  error: "text-noxara-error",
+};
+
+function HealthCard({
+  health,
+  checking,
+  repairing,
+  onCheck,
+  onRepair,
+}: {
+  health: InstanceHealthReport | null;
+  checking: boolean;
+  repairing: boolean;
+  onCheck: () => void;
+  onRepair: () => void;
+}) {
+  if (!health) {
+    return (
+      <div className="yz-card p-4 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-medium text-noxara-text">
+            <ShieldCheck size={15} className="text-noxara-subtle" />
+            Instance Health
+          </div>
+          <p className="text-xs text-noxara-muted mt-0.5">
+            Checks the client files, Java runtime, installed mods, and required dependencies.
+          </p>
+        </div>
+        <button onClick={onCheck} disabled={checking} className="yz-btn-secondary shrink-0">
+          {checking ? <Loader2 size={15} className="animate-spin" /> : <HeartPulse size={15} />}
+          {checking ? "Checking…" : "Check health"}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`yz-card border p-4 ${HEALTH_ACCENT[health.status]}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-semibold capitalize text-noxara-text">
+            <ShieldCheck size={15} />
+            {health.status === "healthy" ? "Healthy" : health.status === "attention" ? "Needs attention" : "Broken"}
+          </div>
+          <p className="text-xs text-noxara-muted mt-0.5">
+            {health.checks.length} checks · {health.checks.filter((c) => c.status === "ok").length} ok
+            {health.checks.some((c) => c.status === "warning")
+              ? ` · ${health.checks.filter((c) => c.status === "warning").length} warnings`
+              : ""}
+            {health.checks.some((c) => c.status === "error")
+              ? ` · ${health.checks.filter((c) => c.status === "error").length} errors`
+              : ""}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button onClick={onCheck} disabled={checking} className="yz-btn-secondary text-xs px-2.5 py-1.5">
+            {checking ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            Recheck
+          </button>
+          <button onClick={onRepair} disabled={repairing} className="yz-btn-primary text-xs px-2.5 py-1.5">
+            {repairing ? <Loader2 size={13} className="animate-spin" /> : <Wrench size={13} />}
+            Repair
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-1">
+        {health.checks.map((check) => {
+          const Icon = CHECK_ICON[check.status];
+          return (
+            <div key={check.id} className="flex items-start gap-2 px-1 py-1">
+              <Icon size={14} className={`shrink-0 mt-0.5 ${CHECK_COLOR[check.status]}`} />
+              <div className="min-w-0">
+                <span className="text-sm text-noxara-text">{check.label}</span>
+                {check.detail && (
+                  <span className="text-xs text-noxara-muted"> · {check.detail}</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

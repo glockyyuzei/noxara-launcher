@@ -23,6 +23,7 @@ import { getDb } from "./database";
 import { getInstanceDirById, listInstances, createInstance } from "./instances";
 import { assertWithin, rootDir } from "../filesystem/paths";
 import { registerDownload, unregisterDownload, signalFor } from "./download-control";
+import { startActivity, progressActivity, succeedActivity, failActivity } from "./activity";
 import { coreBridge } from "./core-bridge";
 import * as modrinth from "./modrinth";
 import type {
@@ -224,8 +225,16 @@ async function installModpackCore(
   if (!file) throw new Error("This modpack version has no downloadable file.");
 
   const mrpackPath = path.join(modpackStagingDir(getInstanceDirById(instanceId)), `${contentId}.mrpack`);
+  startActivity(taskId, {
+    type: "modpack",
+    title: version.name,
+    instanceId,
+    description: "Downloading modpack",
+    status: "downloading",
+  });
   try {
     await downloadWithProgress(file.url, mrpackPath, taskId, version.name, "modpack", instanceId);
+    progressActivity(taskId, {}, "installing", { description: "Installing modpack contents" });
     const result = await installMrpackContents(instanceId, mrpackPath, {
       contentId,
       gameVersion,
@@ -240,6 +249,7 @@ async function installModpackCore(
       },
     });
     contentDownloadEvents.emit("complete", { taskId, category: "modpack", success: true });
+    succeedActivity(taskId, { description: "Modpack installed" });
     return result;
   } catch (err) {
     fs.rmSync(mrpackPath, { force: true });
@@ -249,6 +259,7 @@ async function installModpackCore(
       success: false,
       error: err instanceof Error ? err.message : "Modpack install failed",
     });
+    failActivity(taskId, err instanceof Error ? err.message : "Modpack install failed");
     throw err;
   }
 }
@@ -474,6 +485,7 @@ export async function importModpackFromFile(
   }
 
   const contentId = randomUUID();
+  const importTaskId = randomUUID();
   const probeDir = path.join(rootDir(), ".noxara", "imports", contentId);
   fs.mkdirSync(probeDir, { recursive: true });
 
@@ -496,59 +508,75 @@ export async function importModpackFromFile(
     fs.rmSync(probeDir, { recursive: true, force: true });
   }
 
-  const deps = manifest.dependencies ?? {};
-  const minecraftVersion = deps.minecraft;
-  if (!minecraftVersion) {
-    throw new Error("This modpack doesn't declare its Minecraft version, so the launcher can't create an instance for it.");
-  }
-  const { loader, loaderVersion } = loaderFromDependencies(deps);
-
-  const packName = input.name.trim() || manifest.name?.trim() || "Imported Modpack";
-  const baseInput = {
-    name: packName,
-    minecraftVersion,
-    loader,
-    minRamMb: input.minRamMb,
-    maxRamMb: input.maxRamMb,
-  };
-
-  // `createInstance` validates pinned Forge/NeoForge builds against published versions;
-  // if a pack pins something the registry no longer lists, fall back to the recommended
-  // build rather than failing the whole import.
-  let instance: InstanceRecord;
   try {
-    instance = await createInstance({
-      ...baseInput,
-      loaderVersion: loaderVersion ?? (loader === "vanilla" ? null : "latest"),
-    });
-  } catch (err) {
-    if (loader === "forge" || loader === "neoforge") {
-      instance = await createInstance({ ...baseInput, loaderVersion: "latest" });
-    } else {
-      throw err;
+    const deps = manifest.dependencies ?? {};
+    const minecraftVersion = deps.minecraft;
+    if (!minecraftVersion) {
+      throw new Error(
+        "This modpack doesn't declare its Minecraft version, so the launcher can't create an instance for it."
+      );
     }
+    const { loader, loaderVersion } = loaderFromDependencies(deps);
+
+    const packName = input.name.trim() || manifest.name?.trim() || "Imported Modpack";
+    startActivity(importTaskId, {
+      type: "modpack",
+      title: packName,
+      description: "Importing modpack",
+      status: "importing",
+    });
+
+    const baseInput = {
+      name: packName,
+      minecraftVersion,
+      loader,
+      minRamMb: input.minRamMb,
+      maxRamMb: input.maxRamMb,
+    };
+
+    // `createInstance` validates pinned Forge/NeoForge builds against published versions;
+    // if a pack pins something the registry no longer lists, fall back to the recommended
+    // build rather than failing the whole import.
+    let instance: InstanceRecord;
+    try {
+      instance = await createInstance({
+        ...baseInput,
+        loaderVersion: loaderVersion ?? (loader === "vanilla" ? null : "latest"),
+      });
+    } catch (err) {
+      if (loader === "forge" || loader === "neoforge") {
+        instance = await createInstance({ ...baseInput, loaderVersion: "latest" });
+      } else {
+        throw err;
+      }
+    }
+
+    progressActivity(importTaskId, {}, "importing", { description: "Installing pack contents" });
+    const instancePath = getInstanceDirById(instance.id);
+    const staging = modpackStagingDir(instancePath);
+    const target = path.join(staging, `${contentId}.mrpack`);
+    fs.copyFileSync(mrpackPath, target);
+
+    await installMrpackContents(instance.id, target, {
+      contentId,
+      gameVersion: instance.minecraftVersion,
+      loader: loader === "vanilla" ? null : loader,
+      meta: {
+        taskId: importTaskId,
+        packName: manifest.name ?? packName,
+        versionNumber: manifest.versionId ?? "unknown",
+        source: "local",
+        sourceId: null,
+        sourceVersionId: null,
+      },
+    });
+
+    succeedActivity(importTaskId, { description: "Modpack imported" });
+    return instance;
+  } catch (err) {
+    failActivity(importTaskId, err instanceof Error ? err.message : "Modpack import failed");
+    throw err;
   }
-
-  const instancePath = getInstanceDirById(instance.id);
-  const staging = modpackStagingDir(instancePath);
-  const target = path.join(staging, `${contentId}.mrpack`);
-  fs.copyFileSync(mrpackPath, target);
-
-  await installMrpackContents(instance.id, target, {
-    contentId,
-    gameVersion: instance.minecraftVersion,
-    loader: loader === "vanilla" ? null : loader,
-    meta: {
-      taskId: randomUUID(),
-      packName: manifest.name ?? packName,
-      versionNumber: manifest.versionId ?? "unknown",
-      source: "local",
-      sourceId: null,
-      sourceVersionId: null,
-    },
-  });
-
-  return instance;
 }
 
 function copyDirInto(src: string, dest: string, skipTop: (rel: string) => boolean): void {
@@ -665,6 +693,14 @@ async function installSingleFileCore(
   const safeFilename = path.basename(file.filename);
   const destPath = assertWithin(dir, safeFilename);
 
+  startActivity(taskId, {
+    type: "content",
+    title: version.name,
+    instanceId,
+    description: "Downloading",
+    status: "downloading",
+  });
+
   try {
     await downloadWithProgress(file.url, destPath, taskId, version.name, category, instanceId);
   } catch (err) {
@@ -674,6 +710,7 @@ async function installSingleFileCore(
       success: false,
       error: err instanceof Error ? err.message : "Download failed",
     });
+    failActivity(taskId, err instanceof Error ? err.message : "Download failed");
     throw err;
   }
 
@@ -681,6 +718,7 @@ async function installSingleFileCore(
   if (file.sha1 && actualSha1.toLowerCase() !== file.sha1.toLowerCase()) {
     fs.rmSync(destPath, { force: true });
     contentDownloadEvents.emit("complete", { taskId, category, success: false, error: "Checksum mismatch" });
+    failActivity(taskId, "Downloaded file failed checksum verification and was removed.");
     throw new Error("Downloaded file failed checksum verification and was removed.");
   }
 
@@ -719,6 +757,7 @@ async function installSingleFileCore(
   ).run(row);
 
   contentDownloadEvents.emit("complete", { taskId, category, success: true });
+  succeedActivity(taskId, { description: "Installed" });
   return rowToRecord(row);
 }
 

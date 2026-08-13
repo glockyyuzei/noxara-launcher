@@ -1,16 +1,48 @@
-import { CheckCircle2, AlertTriangle, Loader2, Hammer, Download, FolderOpen, RotateCcw, X } from "lucide-react";
 import {
-  useDownloadStore,
-  selectActiveDownloads,
-  selectFinishedDownloads,
-  formatBytes,
-  formatSpeed,
-  formatEta,
-  type DownloadEntry,
-} from "../stores/useDownloadStore";
+  AlertTriangle,
+  Archive,
+  CheckCircle2,
+  Download,
+  FolderOpen,
+  Hammer,
+  Image,
+  Package,
+  RotateCcw,
+  Wrench,
+  X,
+  XCircle,
+} from "lucide-react";
+import { useActivityStore, selectRecent } from "../stores/useActivityStore";
+import { selectActive } from "../components/ActivityIndicator";
+import { formatBytes, formatSpeed, formatEta } from "../utils/format";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { toast } from "../stores/useToastStore";
+import type { ActivityRecord, ActivityType } from "@shared/types/ipc";
+
+const TYPE_ICONS: Record<ActivityType, typeof Package> = {
+  minecraft: Download,
+  mod: Package,
+  content: Image,
+  modpack: Archive,
+  loader: Wrench,
+  instance: FolderOpen,
+  backup: FolderOpen,
+};
+
+function percentOf(a: ActivityRecord): number {
+  const { progress } = a;
+  const pct = progress.progress;
+  if (pct !== undefined && pct >= 0) {
+    return Math.round(Math.min(1, pct) * 100);
+  }
+  const total = progress.totalBytes ?? 0;
+  const current = progress.currentBytes ?? 0;
+  if (total > 0) {
+    return Math.round((current / total) * 100);
+  }
+  return 90;
+}
 
 function ProgressBar({ percent, tone = "default" }: { percent: number; tone?: "default" | "error" }) {
   const clamped = Math.max(0, Math.min(100, percent));
@@ -26,64 +58,55 @@ function ProgressBar({ percent, tone = "default" }: { percent: number; tone?: "d
   );
 }
 
-function percentOf(d: DownloadEntry): number {
-  if (d.totalBytes > 0) return Math.round((d.bytesDownloaded / d.totalBytes) * 100);
-  // No known total size — show indeterminate progress capped at 90% until complete.
-  return d.status === "downloading" ? 90 : 100;
+function metaLine(a: ActivityRecord): string {
+  const { progress } = a;
+  const parts: string[] = [];
+  if (progress.completedFiles !== undefined && progress.totalFiles !== undefined && progress.totalFiles > 0) {
+    parts.push(`file ${progress.completedFiles}/${progress.totalFiles}`);
+  } else {
+    const total = progress.totalBytes ?? 0;
+    const current = progress.currentBytes ?? 0;
+    if (total > 0) {
+      parts.push(`${formatBytes(current)} / ${formatBytes(total)}`);
+    } else if (current > 0) {
+      parts.push(formatBytes(current));
+    }
+  }
+  if (progress.currentFile) parts.push(progress.currentFile);
+  return parts.join(" · ");
 }
 
-function ActiveDownloadRow({ d, onCancel }: { d: DownloadEntry; onCancel: (taskId: string) => void }) {
-  const meta = d.kind === "batch" && (d.fileCount ?? 0) > 1 ? ` · ${d.fileIndex}/${d.fileCount} file${(d.fileCount ?? 0) > 1 ? "s" : ""}` : "";
-  const speed = formatSpeed(d.bytesPerSec);
-  const eta = formatEta(d.etaSeconds);
-  const showCounts = d.kind === "batch" && d.totalBytes > 0;
-  // Only single-file mod/content downloads are user-interruptible; batch downloads
-  // (client jars, libraries, assets) are part of an atomic launch/install operation.
-  const cancellable = d.kind === "mod" || d.kind === "content";
+function ActiveRow({ a, onCancel }: { a: ActivityRecord; onCancel: (id: string) => void }) {
+  const Icon = a.type === "loader" ? Hammer : TYPE_ICONS[a.type];
+  const speed = formatSpeed(a.progress.speedBytesPerSec);
+  const eta = formatEta(a.progress.etaSeconds);
+  const meta = metaLine(a);
 
   return (
     <div className="yz-card px-4 py-3">
       <div className="flex items-center justify-between gap-3 mb-1.5">
         <div className="flex items-center gap-2 text-sm text-noxara-text min-w-0">
-          <Loader2 size={14} className="animate-spin text-noxara-subtle shrink-0" />
-          <span className="truncate">{d.name}</span>
+          <Icon size={14} className={`${a.type === "loader" ? "text-noxara-subtle animate-pulse" : "text-noxara-subtle animate-spin"} shrink-0`} />
+          <span className="truncate">{a.title}</span>
         </div>
         <span className="text-xs text-noxara-muted shrink-0 tabular-nums">
-          {d.kind === "batch" ? (
-            <>
-              {showCounts ? `${formatBytes(d.bytesDownloaded)} / ${formatBytes(d.totalBytes)}` : formatBytes(d.bytesDownloaded)}
-              {meta}
-            </>
-          ) : (
-            <>
-              {formatBytes(d.bytesDownloaded)}
-              {d.totalBytes > 0 ? ` / ${formatBytes(d.totalBytes)}` : ""}
-            </>
-          )}
+          {meta || (a.description ?? "Working…")}
         </span>
       </div>
-      <ProgressBar percent={percentOf(d)} />
+      <ProgressBar percent={percentOf(a)} tone={a.status === "failed" ? "error" : "default"} />
       <div className="flex items-center justify-between mt-1.5 text-[11px] text-noxara-muted">
-        <span className="truncate">
-          {d.status === "completed"
-            ? "Completed"
-            : showCounts
-              ? `Overall progress · ${percentOf(d)}%`
-              : d.totalBytes > 0
-                ? `${percentOf(d)}%`
-                : "Downloading…"}
-        </span>
+        <span className="truncate">{a.description ?? progressLabel(a)}</span>
         <div className="flex items-center gap-3 shrink-0">
           <span className="tabular-nums">
             {speed && <span>{speed}</span>}
             {speed && eta && <span> · </span>}
             {eta && <span>ETA {eta}</span>}
           </span>
-          {cancellable && (
+          {a.cancellable && (
             <button
-              onClick={() => onCancel(d.taskId)}
+              onClick={() => onCancel(a.id)}
               className="flex items-center gap-1 text-[11px] text-noxara-muted hover:text-noxara-error transition-colors"
-              aria-label={`Cancel ${d.name}`}
+              aria-label={`Cancel ${a.title}`}
             >
               <X size={12} /> Cancel
             </button>
@@ -94,53 +117,43 @@ function ActiveDownloadRow({ d, onCancel }: { d: DownloadEntry; onCancel: (taskI
   );
 }
 
-function LoaderInstallRow({ taskId, stage, message, status }: { taskId: string; stage: string; message: string; status: "installing" | "complete" }) {
-  if (status === "complete") {
-    return (
-      <div key={taskId} className="yz-card px-4 py-3 flex items-center gap-2">
-        <CheckCircle2 size={15} className="text-noxara-success shrink-0" />
-        <div className="text-sm text-noxara-text truncate">{message || "Loader installed"}</div>
-      </div>
-    );
-  }
-  return (
-    <div key={taskId} className="yz-card px-4 py-3">
-      <div className="flex items-center gap-2 mb-1.5 text-sm text-noxara-text">
-        <Hammer size={14} className="text-noxara-subtle animate-pulse shrink-0" />
-        <span className="truncate">{message || "Installing loader"}</span>
-      </div>
-      <div className="text-xs text-noxara-muted capitalize truncate">{stage || "working"}</div>
-    </div>
-  );
+function progressLabel(a: ActivityRecord): string {
+  const percent = percentOf(a);
+  if (a.progress.progress !== undefined || (a.progress.totalBytes ?? 0) > 0) return `${percent}%`;
+  return "In progress…";
 }
 
-function FinishedRow({ d, retryable, onRetry }: { d: DownloadEntry; retryable: boolean; onRetry: (taskId: string) => void }) {
+function FinishedRow({ a, onRetry }: { a: ActivityRecord; onRetry: (id: string) => void }) {
   return (
     <div
-      key={d.taskId}
       className={`yz-card px-4 py-3 flex items-center justify-between gap-3 ${
-        d.status === "failed" ? "border-noxara-error/30" : ""
+        a.status === "failed" ? "border-noxara-error/30" : ""
       }`}
     >
       <div className="flex items-center gap-2 text-sm min-w-0">
-        {d.status === "completed" ? (
+        {a.status === "completed" ? (
           <CheckCircle2 size={15} className="text-noxara-success shrink-0" />
+        ) : a.status === "cancelled" ? (
+          <XCircle size={15} className="text-noxara-warning shrink-0" />
         ) : (
           <AlertTriangle size={15} className="text-noxara-error shrink-0" />
         )}
         <div className="min-w-0">
-          <div className="text-noxara-text truncate">{d.name}</div>
-          {d.error && <div className="text-xs text-noxara-error mt-0.5 truncate">{d.error}</div>}
-          {d.status === "failed" && !retryable && (
+          <div className="text-noxara-text truncate">{a.title}</div>
+          {a.error && <div className="text-xs text-noxara-error mt-0.5 truncate">{a.error}</div>}
+          {a.description && a.status === "completed" && (
+            <div className="text-xs text-noxara-muted mt-0.5 truncate">{a.description}</div>
+          )}
+          {a.status === "failed" && !a.retryable && (
             <div className="text-xs text-noxara-muted mt-0.5">The originating action can be retried from its page.</div>
           )}
         </div>
       </div>
-      {d.status === "failed" && retryable && (
+      {a.status === "failed" && a.retryable && (
         <button
-          onClick={() => onRetry(d.taskId)}
+          onClick={() => onRetry(a.id)}
           className="yz-btn-secondary text-xs px-2.5 py-1 shrink-0"
-          aria-label={`Retry ${d.name}`}
+          aria-label={`Retry ${a.title}`}
         >
           <RotateCcw size={12} /> Retry
         </button>
@@ -150,43 +163,37 @@ function FinishedRow({ d, retryable, onRetry }: { d: DownloadEntry; retryable: b
 }
 
 export default function DownloadsPage() {
-  const downloads = useDownloadStore((s) => s.downloads);
-  const forgeInstalls = useDownloadStore((s) => s.forgeInstalls);
-  const retryableTaskIds = useDownloadStore((s) => s.retryableTaskIds);
-  const clearCompleted = useDownloadStore((s) => s.clearCompleted);
+  const activities = useActivityStore((s) => s.activities);
+  const clearCompleted = useActivityStore((s) => s.clearCompleted);
 
-  const active = selectActiveDownloads(downloads);
-  const finished = selectFinishedDownloads(downloads);
-  const activeForge = forgeInstalls.filter((f) => f.status === "installing");
-  const finishedForge = forgeInstalls.filter((f) => f.status === "complete");
+  const active = selectActive(activities);
+  const recent = selectRecent(activities);
+  const isEmpty = activities.length === 0;
 
-  async function handleCancel(taskId: string) {
+  async function handleCancel(id: string) {
     try {
-      await window.noxara.cancelDownload(taskId);
-      toast.success("Download cancelled", "You can retry it from this page.");
+      await window.noxara.cancelActivity(id);
+      toast.success("Operation cancelled", "You can retry it from this page.");
     } catch (e) {
-      toast.error("Couldn't cancel download", e instanceof Error ? e.message : undefined);
+      toast.error("Couldn't cancel", e instanceof Error ? e.message : undefined);
     }
   }
 
-  async function handleRetry(taskId: string) {
+  async function handleRetry(id: string) {
     try {
-      await window.noxara.retryDownload(taskId);
+      await window.noxara.retryActivity(id);
     } catch (e) {
-      toast.error("Couldn't retry download", e instanceof Error ? e.message : undefined);
+      toast.error("Couldn't retry", e instanceof Error ? e.message : undefined);
     }
   }
-
-  const isEmpty = downloads.length === 0 && forgeInstalls.length === 0;
-  const hasFinished = finished.length > 0 || finishedForge.length > 0;
 
   return (
     <div className="p-4 md:p-6 max-w-3xl mx-auto">
       <PageHeader
         title="Downloads"
-        subtitle="Mods, content, Minecraft files, and loader installs."
+        subtitle="Mods, content, Minecraft files, loader installs, and repairs."
         actions={
-          hasFinished && (
+          recent.length > 0 && (
             <button onClick={clearCompleted} className="yz-btn-ghost text-xs">
               Clear finished
             </button>
@@ -197,25 +204,17 @@ export default function DownloadsPage() {
       {isEmpty ? (
         <EmptyState
           icon={Download}
-          title="No downloads"
-          description="Mod, modpack, resource pack, shader, and Minecraft file downloads will show up here."
+          title="No activity"
+          description="Mod, modpack, resource pack, shader, Minecraft file downloads, and repairs will show up here."
         />
       ) : (
         <div className="space-y-2">
-          {activeForge.map((f) => (
-            <LoaderInstallRow key={f.taskId} taskId={f.taskId} stage={f.stage} message={f.message} status={f.status} />
+          {active.map((a) => (
+            <ActiveRow key={a.id} a={a} onCancel={handleCancel} />
           ))}
 
-          {active.map((d) => (
-            <ActiveDownloadRow key={d.taskId} d={d} onCancel={handleCancel} />
-          ))}
-
-          {finishedForge.map((f) => (
-            <LoaderInstallRow key={f.taskId} taskId={f.taskId} stage={f.stage} message={f.message} status={f.status} />
-          ))}
-
-          {finished.map((d) => (
-            <FinishedRow key={d.taskId} d={d} retryable={retryableTaskIds.has(d.taskId)} onRetry={handleRetry} />
+          {recent.map((a) => (
+            <FinishedRow key={a.id} a={a} onRetry={handleRetry} />
           ))}
         </div>
       )}
@@ -223,11 +222,9 @@ export default function DownloadsPage() {
       {active.length > 0 && (
         <div className="mt-4 flex items-center justify-between text-xs text-noxara-muted">
           <span className="inline-flex items-center gap-1.5">
-            <FolderOpen size={13} /> {active.length} active download{active.length > 1 ? "s" : ""}
+            <FolderOpen size={13} /> {active.length} active operation{active.length > 1 ? "s" : ""}
           </span>
-          {active.some((d) => d.totalBytes > 0) && (
-            <span>Download pages show real launcher progress.</span>
-          )}
+          <span>Shows real launcher progress.</span>
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ import path from "node:path";
 import { shell } from "electron";
 import { getDb } from "./database";
 import { instanceDir, slugifyInstanceName } from "../filesystem/paths";
+import { startActivity, succeedActivity, failActivity } from "./activity";
 import type { CreateInstanceInput, InstanceRecord } from "../../shared/types/ipc";
 import { resolveFabricLoaderVersion } from "./fabric";
 import { resolveQuiltLoaderVersion } from "./quilt";
@@ -93,77 +94,91 @@ function validateCreateInput(input: CreateInstanceInput): void {
 export async function createInstance(input: CreateInstanceInput): Promise<InstanceRecord> {
   validateCreateInput(input);
 
-  // Resolve a real, currently-published loader version instead of trusting a
-  // placeholder from the UI — this is what actually gets installed and launched.
-  // Fabric additionally gets validated against the actually-published loader builds
-  // for the selected Minecraft version (an unsupported version fails clearly here,
-  // before any instance directory is created).
-  let resolvedLoaderVersion = input.loaderVersion ?? null;
-  if (input.loader === "fabric") {
-    resolvedLoaderVersion = await resolveFabricLoaderVersion(input.minecraftVersion, resolvedLoaderVersion);
-  } else if (input.loader === "quilt") {
-    resolvedLoaderVersion = await resolveQuiltLoaderVersion(input.minecraftVersion, resolvedLoaderVersion);
-  } else if (input.loader === "forge") {
-    // Forge's own installer/processor pipeline only actually runs on first launch (it
-    // needs a resolved Java runtime, which we don't have yet during instance creation —
-    // see launch.ts). Here we only need to pin down and validate *which* Forge build
-    // this instance is committed to, exactly like Fabric does with its loader version.
-    const forgeVersions = await getForgeVersions(input.minecraftVersion);
-    if (!resolvedLoaderVersion || resolvedLoaderVersion === "latest") {
-      const chosen = forgeVersions.find((v) => v.recommended) ?? forgeVersions.find((v) => v.latest) ?? forgeVersions[0];
-      resolvedLoaderVersion = chosen.fullVersion;
-    } else if (!forgeVersions.some((v) => v.fullVersion === resolvedLoaderVersion)) {
-      throw new Error(`Forge ${resolvedLoaderVersion} is not a published build for Minecraft ${input.minecraftVersion}`);
+  const activityId = randomUUID();
+  startActivity(activityId, {
+    type: "instance",
+    title: input.name.trim(),
+    description: "Creating instance",
+    status: "preparing",
+  });
+
+  try {
+    // Resolve a real, currently-published loader version instead of trusting a
+    // placeholder from the UI — this is what actually gets installed and launched.
+    // Fabric additionally gets validated against the actually-published loader builds
+    // for the selected Minecraft version (an unsupported version fails clearly here,
+    // before any instance directory is created).
+    let resolvedLoaderVersion = input.loaderVersion ?? null;
+    if (input.loader === "fabric") {
+      resolvedLoaderVersion = await resolveFabricLoaderVersion(input.minecraftVersion, resolvedLoaderVersion);
+    } else if (input.loader === "quilt") {
+      resolvedLoaderVersion = await resolveQuiltLoaderVersion(input.minecraftVersion, resolvedLoaderVersion);
+    } else if (input.loader === "forge") {
+      // Forge's own installer/processor pipeline only actually runs on first launch (it
+      // needs a resolved Java runtime, which we don't have yet during instance creation —
+      // see launch.ts). Here we only need to pin down and validate *which* Forge build
+      // this instance is committed to, exactly like Fabric does with its loader version.
+      const forgeVersions = await getForgeVersions(input.minecraftVersion);
+      if (!resolvedLoaderVersion || resolvedLoaderVersion === "latest") {
+        const chosen = forgeVersions.find((v) => v.recommended) ?? forgeVersions.find((v) => v.latest) ?? forgeVersions[0];
+        resolvedLoaderVersion = chosen.fullVersion;
+      } else if (!forgeVersions.some((v) => v.fullVersion === resolvedLoaderVersion)) {
+        throw new Error(`Forge ${resolvedLoaderVersion} is not a published build for Minecraft ${input.minecraftVersion}`);
+      }
+    } else if (input.loader === "neoforge") {
+      // Same contract as Forge: pin down and validate which NeoForge build this instance
+      // is committed to; the installer itself runs during first launch (see launch.ts).
+      const neoforgeVersions = await getNeoForgeVersions(input.minecraftVersion);
+      if (!resolvedLoaderVersion || resolvedLoaderVersion === "latest") {
+        const chosen = neoforgeVersions.find((v) => v.recommended) ?? neoforgeVersions.find((v) => v.latest) ?? neoforgeVersions[0];
+        resolvedLoaderVersion = chosen.fullVersion;
+      } else if (!neoforgeVersions.some((v) => v.fullVersion === resolvedLoaderVersion)) {
+        throw new Error(`NeoForge ${resolvedLoaderVersion} is not a published build for Minecraft ${input.minecraftVersion}`);
+      }
     }
-  } else if (input.loader === "neoforge") {
-    // Same contract as Forge: pin down and validate which NeoForge build this instance
-    // is committed to; the installer itself runs during first launch (see launch.ts).
-    const neoforgeVersions = await getNeoForgeVersions(input.minecraftVersion);
-    if (!resolvedLoaderVersion || resolvedLoaderVersion === "latest") {
-      const chosen = neoforgeVersions.find((v) => v.recommended) ?? neoforgeVersions.find((v) => v.latest) ?? neoforgeVersions[0];
-      resolvedLoaderVersion = chosen.fullVersion;
-    } else if (!neoforgeVersions.some((v) => v.fullVersion === resolvedLoaderVersion)) {
-      throw new Error(`NeoForge ${resolvedLoaderVersion} is not a published build for Minecraft ${input.minecraftVersion}`);
+
+    const id = randomUUID();
+    const dir = instanceDir(`${slugifyInstanceName(input.name)}-${id.slice(0, 8)}`);
+
+    for (const sub of ["mods", "config", "saves", "resourcepacks", "shaderpacks", "logs", "screenshots", "crash-reports"]) {
+      fs.mkdirSync(path.join(dir, sub), { recursive: true });
     }
+
+    const now = new Date().toISOString();
+    const record: InstanceRow = {
+      id,
+      name: input.name.trim(),
+      minecraft_version: input.minecraftVersion,
+      loader: input.loader,
+      loader_version: resolvedLoaderVersion,
+      java_path: input.javaPath ?? null,
+      min_ram_mb: input.minRamMb,
+      max_ram_mb: input.maxRamMb,
+      jvm_args: "",
+      game_args: "",
+      icon_path: input.iconPath ?? null,
+      instance_dir: dir,
+      created_at: now,
+      last_played_at: null,
+      favorite: 0,
+    };
+
+    getDb()
+      .prepare(
+        `INSERT INTO instances
+          (id, name, minecraft_version, loader, loader_version, java_path, min_ram_mb, max_ram_mb,
+           jvm_args, game_args, icon_path, instance_dir, created_at, last_played_at, favorite)
+         VALUES (@id, @name, @minecraft_version, @loader, @loader_version, @java_path, @min_ram_mb, @max_ram_mb,
+                 @jvm_args, @game_args, @icon_path, @instance_dir, @created_at, @last_played_at, @favorite)`
+      )
+      .run(record);
+
+    succeedActivity(activityId, { description: "Instance created" });
+    return rowToRecord(record);
+  } catch (err) {
+    failActivity(activityId, err instanceof Error ? err.message : "Instance creation failed");
+    throw err;
   }
-
-  const id = randomUUID();
-  const dir = instanceDir(`${slugifyInstanceName(input.name)}-${id.slice(0, 8)}`);
-
-  for (const sub of ["mods", "config", "saves", "resourcepacks", "shaderpacks", "logs", "screenshots", "crash-reports"]) {
-    fs.mkdirSync(path.join(dir, sub), { recursive: true });
-  }
-
-  const now = new Date().toISOString();
-  const record: InstanceRow = {
-    id,
-    name: input.name.trim(),
-    minecraft_version: input.minecraftVersion,
-    loader: input.loader,
-    loader_version: resolvedLoaderVersion,
-    java_path: input.javaPath ?? null,
-    min_ram_mb: input.minRamMb,
-    max_ram_mb: input.maxRamMb,
-    jvm_args: "",
-    game_args: "",
-    icon_path: input.iconPath ?? null,
-    instance_dir: dir,
-    created_at: now,
-    last_played_at: null,
-    favorite: 0,
-  };
-
-  getDb()
-    .prepare(
-      `INSERT INTO instances
-        (id, name, minecraft_version, loader, loader_version, java_path, min_ram_mb, max_ram_mb,
-         jvm_args, game_args, icon_path, instance_dir, created_at, last_played_at, favorite)
-       VALUES (@id, @name, @minecraft_version, @loader, @loader_version, @java_path, @min_ram_mb, @max_ram_mb,
-               @jvm_args, @game_args, @icon_path, @instance_dir, @created_at, @last_played_at, @favorite)`
-    )
-    .run(record);
-
-  return rowToRecord(record);
 }
 
 export function deleteInstance(id: string): void {
@@ -179,29 +194,43 @@ export async function duplicateInstance(id: string, newName: string): Promise<In
   const source = db.prepare("SELECT * FROM instances WHERE id = ?").get(id) as InstanceRow | undefined;
   if (!source) throw new Error(`instance ${id} not found`);
 
-  const created = await createInstance({
-    name: newName,
-    minecraftVersion: source.minecraft_version,
-    loader: source.loader,
-    loaderVersion: source.loader_version,
-    javaPath: source.java_path,
-    minRamMb: source.min_ram_mb,
-    maxRamMb: source.max_ram_mb,
-    iconPath: source.icon_path,
+  const activityId = randomUUID();
+  startActivity(activityId, {
+    type: "instance",
+    title: newName.trim(),
+    description: "Duplicating instance",
+    status: "preparing",
   });
 
-  // Copy mutable content (mods/config/saves/etc.) so the duplicate is fully independent,
-  // per spec section 12: duplicates must not share mutable files.
-  const newDir = getInstanceDirById(created.id);
-  for (const sub of ["mods", "config", "saves", "resourcepacks", "shaderpacks"]) {
-    const src = path.join(source.instance_dir, sub);
-    const dest = path.join(newDir, sub);
-    if (fs.existsSync(src)) {
-      fs.cpSync(src, dest, { recursive: true });
-    }
-  }
+  try {
+    const created = await createInstance({
+      name: newName,
+      minecraftVersion: source.minecraft_version,
+      loader: source.loader,
+      loaderVersion: source.loader_version,
+      javaPath: source.java_path,
+      minRamMb: source.min_ram_mb,
+      maxRamMb: source.max_ram_mb,
+      iconPath: source.icon_path,
+    });
 
-  return created;
+    // Copy mutable content (mods/config/saves/etc.) so the duplicate is fully independent,
+    // per spec section 12: duplicates must not share mutable files.
+    const newDir = getInstanceDirById(created.id);
+    for (const sub of ["mods", "config", "saves", "resourcepacks", "shaderpacks"]) {
+      const src = path.join(source.instance_dir, sub);
+      const dest = path.join(newDir, sub);
+      if (fs.existsSync(src)) {
+        fs.cpSync(src, dest, { recursive: true });
+      }
+    }
+
+    succeedActivity(activityId, { description: "Instance duplicated" });
+    return created;
+  } catch (err) {
+    failActivity(activityId, err instanceof Error ? err.message : "Duplicate failed");
+    throw err;
+  }
 }
 
 export function openInstanceFolder(id: string): void {

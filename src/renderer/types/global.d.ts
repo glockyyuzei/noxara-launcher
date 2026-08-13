@@ -30,6 +30,11 @@ import type {
   ModpackImportInput,
   DownloadTaskInfo,
   DownloadTasksChangedPayload,
+  ActivityListPayload,
+  ActivityUpdatedPayload,
+  ActivityRemovedPayload,
+  InstanceHealthReport,
+  ModDependenciesResult,
   ServerRecord,
   ServerInput,
   ServerPingResult,
@@ -71,6 +76,7 @@ declare global {
       listInstalledMods(instanceId: string): Promise<InstalledMod[]>;
       removeMod(instanceId: string, modId: string): Promise<void>;
       checkModUpdates(instanceId: string): Promise<ModUpdateInfo[]>;
+      getModDependencies(instanceId: string, versionId: string): Promise<ModDependenciesResult>;
       installContent(instanceId: string, versionId: string, category: ContentCategory): Promise<InstalledContent>;
       listInstalledContent(instanceId: string, category: ContentCategory): Promise<InstalledContent[]>;
       removeContent(instanceId: string, itemId: string, category: ContentCategory): Promise<void>;
@@ -83,6 +89,12 @@ declare global {
       listDownloadTasks(): Promise<DownloadTaskInfo[]>;
       cancelDownload(taskId: string): Promise<void>;
       retryDownload(taskId: string): Promise<void>;
+      listActivities(): Promise<ActivityListPayload>;
+      cancelActivity(activityId: string): Promise<void>;
+      retryActivity(activityId: string): Promise<void>;
+      clearCompletedActivities(): Promise<void>;
+      checkInstanceHealth(instanceId: string): Promise<InstanceHealthReport>;
+      repairInstance(instanceId: string): Promise<InstanceHealthReport>;
       listServers(instanceId?: string | null): Promise<ServerRecord[]>;
       addServer(input: ServerInput): Promise<ServerRecord>;
       updateServer(id: string, input: Partial<ServerInput>): Promise<ServerRecord>;
@@ -114,6 +126,8 @@ declare global {
       onContentDownloadComplete(cb: (p: ContentDownloadCompletePayload) => void): () => void;
       onForgeInstallProgress(cb: (p: ForgeInstallProgressPayload) => void): () => void;
       onDownloadTasksChanged(cb: (p: DownloadTasksChangedPayload) => void): () => void;
+      onActivityUpdated(cb: (p: ActivityUpdatedPayload) => void): () => void;
+      onActivityRemoved(cb: (p: ActivityRemovedPayload) => void): () => void;
     };
   }
 }

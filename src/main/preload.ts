@@ -6,6 +6,9 @@
 import { contextBridge, ipcRenderer } from "electron";
 import { IPC_CHANNELS } from "../shared/types/ipc";
 import type {
+  ActivityListPayload,
+  ActivityUpdatedPayload,
+  ActivityRemovedPayload,
   ContentCategory,
   ContentDownloadCompletePayload,
   ContentDownloadProgressPayload,
@@ -18,6 +21,8 @@ import type {
   GameExitPayload,
   GameOutputPayload,
   GameStartedPayload,
+  InstanceHealthReport,
+  ModDependenciesResult,
   ModDownloadCompletePayload,
   ModDownloadProgressPayload,
   ModLoader,
@@ -71,6 +76,8 @@ const api = {
   listInstalledMods: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.listInstalledMods, instanceId),
   removeMod: (instanceId: string, modId: string) => ipcRenderer.invoke(IPC_CHANNELS.removeMod, instanceId, modId),
   checkModUpdates: (instanceId: string) => ipcRenderer.invoke(IPC_CHANNELS.checkModUpdates, instanceId),
+  getModDependencies: (instanceId: string, versionId: string): Promise<ModDependenciesResult> =>
+    ipcRenderer.invoke(IPC_CHANNELS.getModDependencies, instanceId, versionId),
 
   installContent: (instanceId: string, versionId: string, category: ContentCategory) =>
     ipcRenderer.invoke(IPC_CHANNELS.installContent, instanceId, versionId, category),
@@ -93,6 +100,16 @@ const api = {
   listDownloadTasks: (): Promise<DownloadTaskInfo[]> => ipcRenderer.invoke(IPC_CHANNELS.listDownloadTasks),
   cancelDownload: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelDownload, taskId),
   retryDownload: (taskId: string) => ipcRenderer.invoke(IPC_CHANNELS.retryDownload, taskId),
+
+  listActivities: (): Promise<ActivityListPayload> => ipcRenderer.invoke(IPC_CHANNELS.listActivities),
+  cancelActivity: (activityId: string) => ipcRenderer.invoke(IPC_CHANNELS.cancelActivity, activityId),
+  retryActivity: (activityId: string) => ipcRenderer.invoke(IPC_CHANNELS.retryActivity, activityId),
+  clearCompletedActivities: () => ipcRenderer.invoke(IPC_CHANNELS.clearCompletedActivities),
+
+  checkInstanceHealth: (instanceId: string): Promise<InstanceHealthReport> =>
+    ipcRenderer.invoke(IPC_CHANNELS.checkInstanceHealth, instanceId),
+  repairInstance: (instanceId: string): Promise<InstanceHealthReport> =>
+    ipcRenderer.invoke(IPC_CHANNELS.repairInstance, instanceId),
 
   listServers: (instanceId?: string | null) => ipcRenderer.invoke(IPC_CHANNELS.listServers, instanceId),
   addServer: (input: ServerInput) => ipcRenderer.invoke(IPC_CHANNELS.addServer, input),
@@ -176,6 +193,16 @@ const api = {
     const listener = (_e: unknown, payload: DownloadTasksChangedPayload) => cb(payload);
     ipcRenderer.on(IPC_CHANNELS.eventDownloadTasksChanged, listener);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.eventDownloadTasksChanged, listener);
+  },
+  onActivityUpdated: (cb: (payload: ActivityUpdatedPayload) => void) => {
+    const listener = (_e: unknown, payload: ActivityUpdatedPayload) => cb(payload);
+    ipcRenderer.on(IPC_CHANNELS.eventActivityUpdated, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventActivityUpdated, listener);
+  },
+  onActivityRemoved: (cb: (payload: ActivityRemovedPayload) => void) => {
+    const listener = (_e: unknown, payload: ActivityRemovedPayload) => cb(payload);
+    ipcRenderer.on(IPC_CHANNELS.eventActivityRemoved, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventActivityRemoved, listener);
   },
 };
 

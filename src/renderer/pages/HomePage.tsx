@@ -23,7 +23,9 @@ import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { useAccountStore } from "../stores/useAccountStore";
 import { launchInstance, useLaunchStore } from "../stores/useLaunchStore";
-import { useDownloadStore, selectActiveDownloads, formatBytes, formatSpeed, formatEta } from "../stores/useDownloadStore";
+import { useActivityStore } from "../stores/useActivityStore";
+import { selectActive } from "../components/ActivityIndicator";
+import { formatBytes, formatSpeed, formatEta } from "../utils/format";
 import { toast } from "../stores/useToastStore";
 
 function loaderLabel(loader: InstanceRecord["loader"]): string {
@@ -60,9 +62,14 @@ function ProgressBar({ percent, tone = "default" }: { percent: number; tone?: "d
   );
 }
 
-function percentOf(d: { bytesDownloaded: number; totalBytes: number; status: string }): number {
-  if (d.totalBytes > 0) return Math.round((d.bytesDownloaded / d.totalBytes) * 100);
-  return d.status === "downloading" ? 90 : 100;
+function percentOf(a: { progress: { progress?: number; currentBytes?: number; totalBytes?: number } }): number {
+  const p = a.progress;
+  const pct = p.progress;
+  if (pct !== undefined && pct >= 0) return Math.round(Math.min(1, pct) * 100);
+  const total = p.totalBytes ?? 0;
+  const current = p.currentBytes ?? 0;
+  if (total > 0) return Math.round((current / total) * 100);
+  return 90;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -374,12 +381,10 @@ function QuickActions() {
 /* -------------------------------------------------------------------------- */
 
 function DownloadsSection() {
-  const downloads = useDownloadStore((s) => s.downloads);
-  const forgeInstalls = useDownloadStore((s) => s.forgeInstalls);
-  const active = selectActiveDownloads(downloads);
-  const activeForge = forgeInstalls.filter((f) => f.status === "installing");
+  const activities = useActivityStore((s) => s.activities);
+  const active = selectActive(activities);
 
-  if (active.length === 0 && activeForge.length === 0) return null;
+  if (active.length === 0) return null;
 
   return (
     <div className="animate-fade-in">
@@ -392,44 +397,35 @@ function DownloadsSection() {
         </Link>
       </div>
       <div className="space-y-2">
-        {activeForge.map((f) =>
-          f.status === "installing" ? (
-            <div key={f.taskId} className="yz-card px-4 py-3">
-              <div className="flex items-center gap-2 mb-1.5 text-sm text-noxara-text">
-                <Loader2 size={14} className="animate-spin text-noxara-subtle shrink-0" />
-                <span className="truncate">{f.message || "Installing loader"}</span>
-              </div>
-              <div className="text-xs text-noxara-muted capitalize truncate">{f.stage || "working"}</div>
-            </div>
-          ) : null
-        )}
-        {active.map((d) => {
-          const percent = percentOf(d);
-          const speed = formatSpeed(d.bytesPerSec);
-          const eta = formatEta(d.etaSeconds);
-          const meta = d.kind === "batch" && (d.fileCount ?? 0) > 1 ? ` · file ${d.fileIndex ?? 0}/${d.fileCount ?? 0}` : "";
+        {active.map((a) => {
+          const percent = percentOf(a);
+          const speed = formatSpeed(a.progress.speedBytesPerSec);
+          const eta = formatEta(a.progress.etaSeconds);
+          const total = a.progress.totalBytes ?? 0;
+          const current = a.progress.currentBytes ?? 0;
+          const meta =
+            a.progress.completedFiles !== undefined && a.progress.totalFiles !== undefined && a.progress.totalFiles > 0
+              ? ` · file ${a.progress.completedFiles}/${a.progress.totalFiles}`
+              : total > 0
+                ? ` · ${formatBytes(current)} / ${formatBytes(total)}`
+                : "";
           return (
-            <div key={d.taskId} className="yz-card px-4 py-3">
+            <div key={a.id} className="yz-card px-4 py-3">
               <div className="flex items-center justify-between gap-3 mb-1.5">
                 <div className="flex items-center gap-2 text-sm text-noxara-text min-w-0">
                   <Loader2 size={14} className="animate-spin text-noxara-subtle shrink-0" />
-                  <span className="truncate">{d.name}</span>
+                  <span className="truncate">{a.title}</span>
                 </div>
                 <span className="text-xs text-noxara-muted shrink-0 tabular-nums">
-                  {formatBytes(d.bytesDownloaded)}
-                  {d.totalBytes > 0 ? ` / ${formatBytes(d.totalBytes)}` : ""}
+                  {total > 0 ? `${formatBytes(current)} / ${formatBytes(total)}` : a.description ?? ""}
                   {meta}
                 </span>
               </div>
               <ProgressBar percent={percent} />
               <div className="flex items-center justify-between mt-1 text-[11px] text-noxara-muted">
-                <span>
-                  {d.status === "completed"
-                    ? "Completed"
-                    : d.totalBytes > 0
-                      ? `${percent}%`
-                      : "Downloading…"}
-                  {d.kind === "batch" && d.totalBytes > 0 && ` · overall`}
+                <span className="truncate">
+                  {a.description ??
+                    (a.progress.progress !== undefined || (a.progress.totalBytes ?? 0) > 0 ? `${percent}%` : "In progress…")}
                 </span>
                 <span className="tabular-nums">
                   {speed && <span>{speed}</span>}

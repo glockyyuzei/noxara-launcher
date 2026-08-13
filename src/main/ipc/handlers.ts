@@ -22,6 +22,19 @@ import * as modpackExportService from "../services/modpack-export";
 import * as microsoftLoginService from "../services/microsoft-login";
 import { pingServer } from "../services/server-ping";
 import { cancelDownload, retryDownload, listDownloadTasks, downloadControlEvents } from "../services/download-control";
+import {
+  activityEvents,
+  listActivities,
+  cancelActivity,
+  retryActivity,
+  clearCompletedActivities,
+  progressActivity,
+  succeedActivity,
+  syncDownloadControls,
+  syncControlsNow,
+} from "../services/activity";
+import { checkInstanceHealth, repairInstance } from "../services/health";
+import { getModDependencies } from "../services/mods";
 import type {
   ContentCategory,
   LauncherSettings,
@@ -137,6 +150,10 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     IPC_CHANNELS.checkModUpdates,
     safe((_e, instanceId: string) => modsService.checkModUpdates(instanceId))
   );
+  ipcMain.handle(
+    IPC_CHANNELS.getModDependencies,
+    safe((_e, instanceId: string, versionId: string) => getModDependencies(instanceId, versionId))
+  );
 
   // Content (resource packs / shaders / modpacks via Modrinth)
   ipcMain.handle(
@@ -211,6 +228,16 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.handle(IPC_CHANNELS.listDownloadTasks, safe(() => listDownloadTasks()));
   ipcMain.handle(IPC_CHANNELS.cancelDownload, safe((_e, taskId: string) => cancelDownload(taskId)));
   ipcMain.handle(IPC_CHANNELS.retryDownload, safe((_e, taskId: string) => retryDownload(taskId)));
+
+  // Global activity system (progress/status for every long-running operation)
+  ipcMain.handle(IPC_CHANNELS.listActivities, safe(() => listActivities()));
+  ipcMain.handle(IPC_CHANNELS.cancelActivity, safe((_e, activityId: string) => cancelActivity(activityId)));
+  ipcMain.handle(IPC_CHANNELS.retryActivity, safe((_e, activityId: string) => retryActivity(activityId)));
+  ipcMain.handle(IPC_CHANNELS.clearCompletedActivities, safe(() => clearCompletedActivities()));
+
+  // Instance health / repair
+  ipcMain.handle(IPC_CHANNELS.checkInstanceHealth, safe((_e, instanceId: string) => checkInstanceHealth(instanceId)));
+  ipcMain.handle(IPC_CHANNELS.repairInstance, safe((_e, instanceId: string) => repairInstance(instanceId)));
 
   // Servers
   ipcMain.handle(
@@ -324,16 +351,83 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   coreBridge.on("game.exit", forward(IPC_CHANNELS.eventGameExit));
   coreBridge.on("forge.install.progress", forward(IPC_CHANNELS.eventForgeInstallProgress));
 
-  // Mod downloads run in Node (not the Rust sidecar), so forward their events directly.
+  // Global activity events -> renderer overlay.
+  activityEvents.on("updated", (payload) => getWindow()?.webContents.send(IPC_CHANNELS.eventActivityUpdated, payload));
+  activityEvents.on("removed", (payload) => getWindow()?.webContents.send(IPC_CHANNELS.eventActivityRemoved, payload));
+
+  // Aggregate real progress from every source into the activity registry. Services own
+  // the lifecycle (terminal states / status transitions); this layer only feeds bytes,
+  // file counts, and stage messages through so the overlay always shows backend truth.
+  coreBridge.on("download.progress", (p: { taskId: string; label: string; bytesDownloaded: number; totalBytes: number; fileIndex: number; fileCount: number }) => {
+    progressActivity(
+      p.taskId,
+      {
+        currentBytes: p.bytesDownloaded,
+        totalBytes: p.totalBytes,
+        currentFile: p.label,
+        completedFiles: p.fileIndex,
+        totalFiles: p.fileCount,
+        progress: p.totalBytes > 0 ? p.bytesDownloaded / p.totalBytes : undefined,
+      },
+      "downloading"
+    );
+  });
+
+  coreBridge.on("forge.install.progress", (p: { taskId: string; stage: string; message: string }) => {
+    if (p.stage === "complete") {
+      succeedActivity(p.taskId, { description: p.message });
+    } else {
+      progressActivity(p.taskId, {}, "installing", { description: p.message });
+    }
+  });
+
+  // Mod downloads run in Node (not the Rust sidecar), so forward their events directly
+  // AND feed the bytes into the activity registry (progressActivity is a no-op when no
+  // activity carries the taskId, so repair's shared taskId also benefits).
   modsService.modDownloadEvents.on("progress", forward(IPC_CHANNELS.eventModDownloadProgress));
   modsService.modDownloadEvents.on("complete", forward(IPC_CHANNELS.eventModDownloadComplete));
+  modsService.modDownloadEvents.on(
+    "progress",
+    (p: { taskId: string; bytesDownloaded: number; totalBytes: number }) => {
+      progressActivity(
+        p.taskId,
+        {
+          currentBytes: p.bytesDownloaded,
+          totalBytes: p.totalBytes,
+          progress: p.totalBytes > 0 ? p.bytesDownloaded / p.totalBytes : undefined,
+        },
+        "downloading"
+      );
+    }
+  );
 
   // Content downloads (resource packs / shaders / modpacks) also run in Node.
   contentService.contentDownloadEvents.on("progress", forward(IPC_CHANNELS.eventContentDownloadProgress));
   contentService.contentDownloadEvents.on("complete", forward(IPC_CHANNELS.eventContentDownloadComplete));
+  contentService.contentDownloadEvents.on(
+    "progress",
+    (p: { taskId: string; bytesDownloaded: number; totalBytes: number }) => {
+      progressActivity(
+        p.taskId,
+        {
+          currentBytes: p.bytesDownloaded,
+          totalBytes: p.totalBytes,
+          progress: p.totalBytes > 0 ? p.bytesDownloaded / p.totalBytes : undefined,
+        },
+        "downloading"
+      );
+    }
+  );
 
   // Keep the renderer's Downloads page in sync with which tasks can be cancelled/retried.
   const forwardTasks = () =>
     getWindow()?.webContents.send(IPC_CHANNELS.eventDownloadTasksChanged, { tasks: listDownloadTasks() });
   downloadControlEvents.on("changed", forwardTasks);
+
+  // Keep the activity registry's cancel/retry flags in sync with the same registry.
+  const syncActivityControls = () => syncDownloadControls(listDownloadTasks());
+  downloadControlEvents.on("changed", syncActivityControls);
+  // Seed both once in case work was active before this handler registered.
+  forwardTasks();
+  syncControlsNow();
 }

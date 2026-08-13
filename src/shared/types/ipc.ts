@@ -217,6 +217,16 @@ export interface ModrinthVersionFile {
   primary: boolean;
 }
 
+export type ModrinthDependencyType = "required" | "optional" | "incompatible" | "embedded";
+
+export interface ModrinthVersionDependency {
+  projectId: string;
+  /** Specific pinned version, when the mod pins one; null otherwise. */
+  versionId: string | null;
+  dependencyType: ModrinthDependencyType;
+  fileName: string | null;
+}
+
 export interface ModrinthVersion {
   id: string;
   projectId: string;
@@ -229,6 +239,7 @@ export interface ModrinthVersion {
   datePublished: string;
   downloads: number;
   files: ModrinthVersionFile[];
+  dependencies: ModrinthVersionDependency[];
 }
 
 export interface InstalledMod {
@@ -327,6 +338,141 @@ export interface ModpackImportInput {
   name: string;
   minRamMb: number;
   maxRamMb: number;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Global Activity system                                                      */
+/* -------------------------------------------------------------------------- */
+
+/** What kind of work an activity represents. Every long-running operation Noxara
+ * performs (downloads, installs, imports/exports, repairs, backups, launches)
+ * reports its real progress through this single global channel. */
+export type ActivityType =
+  | "minecraft" // Minecraft version download, libraries, assets, client files
+  | "mod" // mod download / install / update
+  | "content" // resource pack / shader download / install
+  | "modpack" // modpack download / install / import / export
+  | "loader" // Fabric / Forge / NeoForge / Quilt install
+  | "instance" // create / duplicate / repair / launch / kill
+  | "backup"; // backup / restore
+
+/** Lifecycle of an activity. Not every stage is used by every operation — the
+ * system only emits stages that reflect real work (no fake "Loading..." states). */
+export type ActivityStatus =
+  | "queued"
+  | "preparing"
+  | "downloading"
+  | "verifying"
+  | "installing"
+  | "importing"
+  | "exporting"
+  | "repairing"
+  | "launching"
+  | "stopping"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+/** Numeric progress for an activity. Every field is optional and only present when
+ * the backend actually knows the value — the renderer must never invent progress. */
+export interface ActivityProgress {
+  /** 0..1 overall progress. Absent/undefined = indeterminate (no total known). */
+  progress?: number;
+  /** Bytes transferred so far (for downloads/installs). */
+  currentBytes?: number;
+  /** Total bytes to transfer, when the server reports a size. */
+  totalBytes?: number;
+  /** Transfer rate in bytes/sec, when derivable from real byte deltas. */
+  speedBytesPerSec?: number;
+  /** Estimated seconds remaining, when a rate is known. */
+  etaSeconds?: number;
+  /** The file currently being downloaded/processed. */
+  currentFile?: string;
+  /** Files completed so far (batch operations). */
+  completedFiles?: number;
+  /** Total number of files (batch operations). */
+  totalFiles?: number;
+}
+
+export interface ActivityRecord {
+  id: string;
+  type: ActivityType;
+  status: ActivityStatus;
+  /** Short human title, e.g. "Sodium". */
+  title: string;
+  /** Secondary line, e.g. "Installing mod" or the current operation name. */
+  description?: string;
+  instanceId?: string;
+  progress: ActivityProgress;
+  /** Human-readable failure message (status === "failed"). */
+  error?: string;
+  /** True when the backend can safely cancel this operation. */
+  cancellable: boolean;
+  /** True when the backend can retry this operation under the same id. */
+  retryable: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Full snapshot of the backend's activity registry (active + recent history). */
+export interface ActivityListPayload {
+  activities: ActivityRecord[];
+}
+
+/** A single activity changed. `terminal` is true when it just entered a finished
+ * state (completed/failed/cancelled) so the UI can move it into Recent. */
+export interface ActivityUpdatedPayload {
+  activity: ActivityRecord;
+  terminal: boolean;
+}
+
+/** An activity was removed (e.g. recent history cleared or pruned). */
+export interface ActivityRemovedPayload {
+  id: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Instance Health                                                            */
+/* -------------------------------------------------------------------------- */
+
+export type InstanceHealthStatus = "healthy" | "attention" | "broken";
+
+export interface InstanceHealthCheck {
+  id: string;
+  label: string;
+  status: "ok" | "warning" | "error";
+  detail?: string;
+}
+
+export interface InstanceHealthReport {
+  status: InstanceHealthStatus;
+  checks: InstanceHealthCheck[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Mod dependencies (Modrinth)                                                */
+/* -------------------------------------------------------------------------- */
+
+export type ModDependencyKind = "required" | "optional" | "incompatible" | "embedded";
+
+export interface ModDependency {
+  projectId: string;
+  versionId: string | null;
+  dependencyType: ModDependencyKind;
+  /** Best-effort display metadata resolved from the project (may be absent if the
+   * project lookup fails). */
+  name?: string;
+  iconUrl?: string | null;
+}
+
+export interface ModDependenciesResult {
+  /** Required dependencies that are already installed for this instance. */
+  present: Array<{ dependency: ModDependency; installed: boolean }>;
+  /** Required dependencies that are missing and would need installing. */
+  missing: ModDependency[];
+  /** Incompatible with the current instance loader/game version. */
+  incompatible: ModDependency[];
+  optional: ModDependency[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -462,6 +608,9 @@ export interface NoxaraApi {
   listInstalledMods(instanceId: string): Promise<InstalledMod[]>;
   removeMod(instanceId: string, modId: string): Promise<void>;
   checkModUpdates(instanceId: string): Promise<ModUpdateInfo[]>;
+  /** Resolves a version's Modrinth dependencies against what's installed in an
+   * instance — used to show "This mod requires…" and gate installs. */
+  getModDependencies(instanceId: string, versionId: string): Promise<ModDependenciesResult>;
 
   // Content (resource packs / shaders / modpacks via Modrinth)
   installContent(instanceId: string, versionId: string, category: ContentCategory): Promise<InstalledContent>;
@@ -480,6 +629,16 @@ export interface NoxaraApi {
   listDownloadTasks(): Promise<DownloadTaskInfo[]>;
   cancelDownload(taskId: string): Promise<void>;
   retryDownload(taskId: string): Promise<void>;
+
+  // Global activities (progress/status for every long-running operation)
+  listActivities(): Promise<ActivityListPayload>;
+  cancelActivity(activityId: string): Promise<void>;
+  retryActivity(activityId: string): Promise<void>;
+  clearCompletedActivities(): Promise<void>;
+
+  // Instance health
+  checkInstanceHealth(instanceId: string): Promise<InstanceHealthReport>;
+  repairInstance(instanceId: string): Promise<InstanceHealthReport>;
 
   // Servers
   listServers(instanceId?: string | null): Promise<ServerRecord[]>;
@@ -541,6 +700,7 @@ export const IPC_CHANNELS = {
   listInstalledMods: "noxara:mods:listInstalled",
   removeMod: "noxara:mods:remove",
   checkModUpdates: "noxara:mods:checkUpdates",
+  getModDependencies: "noxara:mods:getDependencies",
   installContent: "noxara:content:install",
   listInstalledContent: "noxara:content:listInstalled",
   removeContent: "noxara:content:remove",
@@ -553,6 +713,12 @@ export const IPC_CHANNELS = {
   listDownloadTasks: "noxara:downloads:listTasks",
   cancelDownload: "noxara:downloads:cancel",
   retryDownload: "noxara:downloads:retry",
+  listActivities: "noxara:activities:list",
+  cancelActivity: "noxara:activities:cancel",
+  retryActivity: "noxara:activities:retry",
+  clearCompletedActivities: "noxara:activities:clearCompleted",
+  checkInstanceHealth: "noxara:instances:health",
+  repairInstance: "noxara:instances:repair",
   listServers: "noxara:servers:list",
   addServer: "noxara:servers:add",
   updateServer: "noxara:servers:update",
@@ -587,4 +753,7 @@ export const IPC_CHANNELS = {
   eventContentDownloadComplete: "noxara:event:contentDownloadComplete",
   eventDownloadTasksChanged: "noxara:event:downloadTasksChanged",
   eventForgeInstallProgress: "noxara:event:forgeInstallProgress",
+  // Global activity events (main -> renderer, one-way)
+  eventActivityUpdated: "noxara:event:activityUpdated",
+  eventActivityRemoved: "noxara:event:activityRemoved",
 } as const;

@@ -3,9 +3,10 @@ import { Routes, Route } from "react-router-dom";
 import { TitleBar } from "./layouts/TitleBar";
 import { Sidebar } from "./layouts/Sidebar";
 import { ToastContainer } from "./components/ToastContainer";
+import { ActivityOverlay } from "./components/ActivityOverlay";
 import { useLaunchStore } from "./stores/useLaunchStore";
 import { useAccountStore } from "./stores/useAccountStore";
-import { useDownloadStore } from "./stores/useDownloadStore";
+import { useActivityStore } from "./stores/useActivityStore";
 import { toast } from "./stores/useToastStore";
 import HomePage from "./pages/HomePage";
 import InstancesPage from "./pages/InstancesPage";
@@ -26,12 +27,9 @@ export default function App() {
   const markRunning = useLaunchStore((s) => s.markRunning);
   const refreshRunning = useLaunchStore((s) => s.refreshRunning);
   const refreshAccounts = useAccountStore((s) => s.refresh);
-  const onModProgress = useDownloadStore((s) => s.onProgress);
-  const onModComplete = useDownloadStore((s) => s.onComplete);
-  const onBatchProgress = useDownloadStore((s) => s.onBatchProgress);
-  const onBatchComplete = useDownloadStore((s) => s.onBatchComplete);
-  const onForgeProgress = useDownloadStore((s) => s.onForgeProgress);
-  const onTasksChanged = useDownloadStore((s) => s.onTasksChanged);
+  const hydrateActivities = useActivityStore((s) => s.hydrate);
+  const applyActivityUpdate = useActivityStore((s) => s.applyUpdate);
+  const applyActivityRemoved = useActivityStore((s) => s.applyRemoved);
 
   // Load the account list once at app start so the bottom-left selector,
   // home screen, and accounts page all read from the same populated store.
@@ -40,13 +38,6 @@ export default function App() {
   }, [refreshAccounts]);
 
   useEffect(() => {
-    const offProgress = window.noxara.onDownloadProgress((p) => onBatchProgress(p));
-    const offComplete = window.noxara.onDownloadComplete((p) => {
-      onBatchComplete(p);
-      if (p.failed.length > 0) {
-        toast.error("Some files failed to download", `${p.failed.length} file(s) could not be downloaded`);
-      }
-    });
     const offStarted = window.noxara.onGameStarted((p) => markRunning(p.instanceId, true));
     const offOutput = window.noxara.onGameOutput((p) => {
       appendLog(p);
@@ -58,23 +49,11 @@ export default function App() {
         toast.error("Minecraft crashed", p.code !== null ? `Exit code ${p.code}` : undefined);
       }
     });
-    const offModProgress = window.noxara.onModDownloadProgress((p) => onModProgress(p));
-    const offModComplete = window.noxara.onModDownloadComplete((p) => {
-      onModComplete(p);
-      if (!p.success) toast.error("Mod download failed", p.error);
-    });
-    const offContentProgress = window.noxara.onContentDownloadProgress((p) => onModProgress(p));
-    const offContentComplete = window.noxara.onContentDownloadComplete((p) => {
-      onModComplete(p);
-      if (!p.success) toast.error("Download failed", p.error);
-    });
-    const offForgeProgress = window.noxara.onForgeInstallProgress((p) => {
-      onForgeProgress(p);
-      if (p.stage === "complete") toast.success("Loader installed", p.message);
-    });
-    const offTasksChanged = window.noxara.onDownloadTasksChanged((p) => onTasksChanged(p));
-    // Seed the retryable set once in case a download was active before the window loaded.
-    window.noxara.listDownloadTasks().then((tasks) => onTasksChanged({ tasks }));
+
+    // Global activity registry (overlay + Downloads pages) — subscribe + seed once.
+    const offActivityUpdated = window.noxara.onActivityUpdated((p) => applyActivityUpdate(p));
+    const offActivityRemoved = window.noxara.onActivityRemoved((p) => applyActivityRemoved(p));
+    hydrateActivities();
 
     // Reconcile running state against the core's actual process registry so the UI
     // stays accurate even if a process is killed manually or crashes without events.
@@ -84,21 +63,15 @@ export default function App() {
     window.addEventListener("focus", onFocus);
 
     return () => {
-      offProgress();
-      offComplete();
       offStarted();
       offOutput();
       offExit();
-      offModProgress();
-      offModComplete();
-      offContentProgress();
-      offContentComplete();
-      offForgeProgress();
-      offTasksChanged();
+      offActivityUpdated();
+      offActivityRemoved();
       clearInterval(pollTimer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [appendLog, markRunning, refreshRunning, onModProgress, onModComplete, onBatchProgress, onBatchComplete, onForgeProgress, onTasksChanged]);
+  }, [appendLog, markRunning, refreshRunning, applyActivityUpdate, applyActivityRemoved, hydrateActivities]);
 
   return (
     <div className="h-screen w-screen flex flex-col bg-noxara-black">
@@ -123,6 +96,7 @@ export default function App() {
           </Routes>
         </main>
       </div>
+      <ActivityOverlay />
       <ToastContainer />
     </div>
   );

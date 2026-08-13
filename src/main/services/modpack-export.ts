@@ -17,6 +17,7 @@ import { listInstances, getInstanceDirById } from "./instances";
 import { listInstalledMods } from "./mods";
 import { coreBridge } from "./core-bridge";
 import { rootDir, assertWithin } from "../filesystem/paths";
+import { startActivity, progressActivity, succeedActivity, failActivity } from "./activity";
 import * as modrinth from "./modrinth";
 import type { InstanceRecord, ModrinthVersionFile } from "../../shared/types/ipc";
 
@@ -60,6 +61,15 @@ export async function exportModpack(instanceId: string, destPath: string): Promi
   const instance: InstanceRecord | undefined = listInstances().find((i) => i.id === instanceId);
   if (!instance) throw new Error(`instance ${instanceId} not found`);
 
+  const activityId = randomUUID();
+  startActivity(activityId, {
+    type: "modpack",
+    title: instance.name,
+    instanceId: instance.id,
+    description: "Exporting modpack",
+    status: "exporting",
+  });
+
   const target = destPath.toLowerCase().endsWith(".mrpack") ? destPath : `${destPath}.mrpack`;
   const instanceDir = getInstanceDirById(instanceId);
 
@@ -68,6 +78,8 @@ export async function exportModpack(instanceId: string, destPath: string): Promi
   fs.mkdirSync(overridesDir, { recursive: true });
 
   try {
+    progressActivity(activityId, {}, "exporting", { description: "Collecting mods and overrides" });
+
     // 1. The mods this instance actually has files for.
     const mods = listInstalledMods(instanceId).filter((m) => m.fileExists && m.filename);
     const files: Array<Record<string, unknown>> = [];
@@ -111,13 +123,18 @@ export async function exportModpack(instanceId: string, destPath: string): Promi
     copyOverrides(instanceDir, overridesDir);
 
     // 4. Hand the two to noxara-core which writes the zip.
+    progressActivity(activityId, {}, "exporting", { description: "Writing .mrpack archive" });
     await coreBridge.call<{ created: boolean }>(
       "modpack.create",
       { zipPath: target, indexPath, overridesDir },
       120_000
     );
 
+    succeedActivity(activityId, { description: "Modpack exported" });
     return { exported: true };
+  } catch (err) {
+    failActivity(activityId, err instanceof Error ? err.message : "Export failed");
+    throw err;
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

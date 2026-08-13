@@ -134,6 +134,12 @@ interface ModrinthVersionRaw {
     size: number;
     primary: boolean;
   }[];
+  dependencies?: {
+    project_id: string;
+    version_id: string | null;
+    dependency_type: "required" | "optional" | "incompatible" | "embedded";
+    file_name: string | null;
+  }[];
 }
 
 function rawVersionToVersion(v: ModrinthVersionRaw): ModrinthVersion {
@@ -154,6 +160,12 @@ function rawVersionToVersion(v: ModrinthVersionRaw): ModrinthVersion {
       sha1: f.hashes.sha1,
       size: f.size,
       primary: f.primary,
+    })),
+    dependencies: (v.dependencies ?? []).map((d) => ({
+      projectId: d.project_id,
+      versionId: d.version_id,
+      dependencyType: d.dependency_type,
+      fileName: d.file_name,
     })),
   };
 }
@@ -197,4 +209,24 @@ export async function getProjectVersions(
 export async function getVersion(versionId: string): Promise<ModrinthVersion> {
   const raw = await modrinthFetch<ModrinthVersionRaw>(`/version/${versionId}`);
   return rawVersionToVersion(raw);
+}
+
+export interface ModrinthProject {
+  projectId: string;
+  slug: string;
+  title: string;
+  iconUrl: string | null;
+}
+
+interface ModrinthProjectRaw {
+  id: string;
+  slug: string;
+  title: string;
+  icon_url: string | null;
+}
+
+/** Best-effort project metadata (title/icon) used to render dependency names. */
+export async function getProject(projectId: string): Promise<ModrinthProject> {
+  const raw = await modrinthFetch<ModrinthProjectRaw>(`/project/${projectId}`);
+  return { projectId: raw.id, slug: raw.slug, title: raw.title, iconUrl: raw.icon_url };
 }
