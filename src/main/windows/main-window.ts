@@ -75,7 +75,7 @@ export function createMainWindow(): BrowserWindow {
     win.loadURL("http://localhost:5173");
     win.webContents.openDevTools({ mode: "detach" });
   } else {
-    win.loadFile(path.join(__dirname, "../renderer/index.html"));
+    win.loadFile(path.join(__dirname, "../../renderer/index.html"));
   }
 
   return win;
