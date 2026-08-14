@@ -60,6 +60,8 @@ export interface UpdateInstanceInput {
   javaPath?: string | null;
   minRamMb?: number;
   maxRamMb?: number;
+  /** Star on the library/home cards; drives sort order (favorites first). */
+  favorite?: boolean;
 }
 
 export interface AccountRecord {
@@ -618,6 +620,11 @@ export interface StorageBreakdown {
 /* Settings                                                                   */
 /* -------------------------------------------------------------------------- */
 
+export interface SystemInfo {
+  /** Total system RAM in MB (round( os.totalmem() / MB )). */
+  totalRamMb: number;
+}
+
 export interface LauncherSettings {
   /** Absolute directory new instances are created under. Empty = default. */
   gameDir: string;
@@ -689,7 +696,6 @@ export interface AccountSkinTexture {
 export interface NoxaraApi {
   // Minecraft metadata
   getVersionManifest(forceRefresh?: boolean): Promise<VersionManifest>;
-  getRecommendedJava(versionId: string): Promise<{ majorVersion: number }>;
 
   // Java
   detectJava(): Promise<JavaInstallation[]>;
@@ -799,11 +805,13 @@ export interface NoxaraApi {
   updateServer(id: string, input: Partial<ServerInput>): Promise<ServerRecord>;
   removeServer(id: string): Promise<void>;
   pingServer(address: string, port: number): Promise<ServerPingResult>;
-  pickServerIcon(): Promise<string | null>;
 
   // Settings
   getSettings(): Promise<LauncherSettings>;
   setSettings(partial: Partial<LauncherSettings>): Promise<LauncherSettings>;
+
+  /** Basic host info (total RAM) used by UI validation that mirrors core-side rules. */
+  getSystemInfo(): Promise<SystemInfo>;
 
   // Native pickers (used by Settings to choose a game directory / Java executable)
   pickFolder(title: string): Promise<string | null>;
@@ -815,7 +823,6 @@ export interface NoxaraApi {
   deleteSkin(id: string): Promise<void>;
   renameSkin(id: string, name: string): Promise<SkinRecord>;
   getAccountSkin(accountId: string): Promise<SkinRecord | null>;
-  setAccountSkin(accountId: string, skinId: string | null): Promise<void>;
   applySkin(accountId: string, skinId: string): Promise<void>;
   /** Resolves the account's actual current skin texture for the 3D viewer (Mojang's
    * current skin for Microsoft accounts, the stored skin for offline accounts). */
@@ -829,7 +836,6 @@ export interface NoxaraApi {
 
 export const IPC_CHANNELS = {
   getVersionManifest: "noxara:mojang:getVersionManifest",
-  getRecommendedJava: "noxara:mojang:getRecommendedJava",
   detectJava: "noxara:java:detectAll",
   testJavaPath: "noxara:java:testPath",
   ensureJavaRuntime: "noxara:java:ensureRuntime",
@@ -890,9 +896,9 @@ export const IPC_CHANNELS = {
   updateServer: "noxara:servers:update",
   removeServer: "noxara:servers:remove",
   pingServer: "noxara:servers:ping",
-  pickServerIcon: "noxara:servers:pickIcon",
   getSettings: "noxara:settings:get",
   setSettings: "noxara:settings:set",
+  getSystemInfo: "noxara:system:info",
   pickFolder: "noxara:shell:pickFolder",
   pickJavaExecutable: "noxara:shell:pickJavaExecutable",
   openDataDirectory: "noxara:shell:openDataDirectory",
@@ -903,7 +909,6 @@ export const IPC_CHANNELS = {
   deleteSkin: "noxara:skins:delete",
   renameSkin: "noxara:skins:rename",
   getAccountSkin: "noxara:skins:getForAccount",
-  setAccountSkin: "noxara:skins:setForAccount",
   applySkin: "noxara:skins:apply",
   getAccountSkinTexture: "noxara:skins:getTexture",
   windowMinimize: "noxara:window:minimize",

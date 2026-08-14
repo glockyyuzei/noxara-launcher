@@ -11,10 +11,10 @@ mod neoforge;
 mod protocol;
 mod quilt;
 
-use protocol::{write_event, write_response, RpcRequest, RpcResponse};
+use protocol::{write_event, write_response, RpcError, RpcRequest, RpcResponse};
 use serde_json::json;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 
 use crate::fabric::FabricApiError;
 use crate::quilt::QuiltApiError;
@@ -68,19 +68,74 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let stdin = tokio::io::stdin();
-    let mut lines = BufReader::new(stdin).lines();
+    let mut lines = BufReader::new(stdin);
 
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
+    loop {
+        match read_line_bounded(&mut lines).await? {
+            Some(line) => {
+                if line.is_empty() {
+                    continue; // sentinel returned after an oversized request was drained + reported
+                }
+                let http = Arc::clone(&http);
+                tokio::spawn(async move {
+                    handle_line(http, &line).await;
+                });
+            }
+            None => break, // EOF
         }
-        let http = Arc::clone(&http);
-        tokio::spawn(async move {
-            handle_line(http, &line).await;
-        });
     }
 
     Ok(())
+}
+
+/// The protocol is line-delimited JSON; the Electron side already caps requests at
+/// `MAX_REQUEST_BYTES`, and this is the matching defense-in-depth: a line longer than
+/// the cap is discarded (the remainder drained to the next newline so the stream stays
+/// aligned) and surfaced as a structured `bad_request` error instead of being buffered
+/// in memory without bound. Returns `Ok(None)` at EOF.
+async fn read_line_bounded<R: AsyncRead + Unpin>(reader: &mut R) -> anyhow::Result<Option<String>> {
+    const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+
+    let mut out: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        let n = reader.read(&mut byte).await?;
+        if n == 0 {
+            if out.is_empty() {
+                return Ok(None); // clean EOF
+            }
+            return Ok(Some(String::from_utf8_lossy(&out).into_owned())); // final line, no trailing newline
+        }
+        if byte[0] == b'\n' {
+            if out.len() > MAX_REQUEST_BYTES {
+                return oversized_request_error();
+            }
+            return Ok(Some(String::from_utf8_lossy(&out).into_owned()));
+        }
+        out.push(byte[0]);
+        if out.len() > MAX_REQUEST_BYTES {
+            // Drain the rest of this over-long line so subsequent requests stay aligned
+            // on the newline protocol, then report it.
+            loop {
+                let n = reader.read(&mut byte).await?;
+                if n == 0 || byte[0] == b'\n' {
+                    return oversized_request_error();
+                }
+            }
+        }
+    }
+}
+
+fn oversized_request_error() -> anyhow::Result<Option<String>> {
+    let _ = write_response(&RpcResponse::Err {
+        id: "unknown".to_string(),
+        ok: false,
+        error: RpcError {
+            code: "bad_request".to_string(),
+            message: "request line exceeded the maximum allowed size".to_string(),
+        },
+    });
+    Ok(Some(String::new())) // sentinel: loop skips this as an empty line
 }
 
 async fn handle_line(http: Arc<reqwest::Client>, line: &str) {
@@ -349,7 +404,7 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
         }
 
         "java.detectAll" => {
-            let installs = java::detect_all();
+            let installs = java::detect_all().await;
             Ok(serde_json::to_value(installs)?)
         }
 
@@ -359,7 +414,7 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
                 .get("path")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("missing path"))?;
-            match java::test_java_path(path) {
+            match java::test_java_path(path).await {
                 Some(install) => Ok(serde_json::to_value(install)?),
                 None => Ok(json!(null)),
             }
@@ -600,10 +655,67 @@ async fn dispatch(http: &reqwest::Client, req: &RpcRequest) -> anyhow::Result<se
                 .get("destDir")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("missing destDir"))?;
-            natives::extract_natives(&jar_paths, std::path::Path::new(dest_dir))?;
+            natives::extract_natives(&jar_paths, std::path::Path::new(dest_dir)).await?;
             Ok(json!({ "extracted": jar_paths.len() }))
         }
 
         other => Err(anyhow::anyhow!("unknown method: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    async fn read_all(input: &[u8]) -> Vec<Option<String>> {
+        let mut reader = Cursor::new(input);
+        let mut out = Vec::new();
+        loop {
+            match read_line_bounded(&mut reader).await.unwrap() {
+                Some(line) => out.push(Some(line)),
+                None => break,
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn reads_multiple_newline_delimited_lines() {
+        let lines = read_all(b"{\"id\":\"1\"}\n{\"id\":\"2\"}\n").await;
+        assert_eq!(lines, vec![Some("{\"id\":\"1\"}".into()), Some("{\"id\":\"2\"}".into())]);
+    }
+
+    #[tokio::test]
+    async fn preserves_multibyte_utf8() {
+        let lines = read_all("café ✓\n日本\n".as_bytes()).await;
+        assert_eq!(lines, vec![Some("café ✓".into()), Some("日本".into())]);
+    }
+
+    #[tokio::test]
+    async fn returns_final_line_without_trailing_newline() {
+        let lines = read_all(b"{\"id\":\"1\"}").await;
+        assert_eq!(lines, vec![Some("{\"id\":\"1\"}".into())]);
+    }
+
+    #[tokio::test]
+    async fn returns_none_on_empty_input() {
+        assert_eq!(read_all(b"").await, Vec::<Option<String>>::new());
+    }
+
+    #[tokio::test]
+    async fn oversized_line_is_drained_and_reported_not_buffered() {
+        // A line over 2 MiB must be drained to its newline (so the next request stays
+        // aligned) and surfaced as a bad_request sentinel rather than buffered whole.
+        let size = 2 * 1024 * 1024 + 16;
+        let mut input = vec![b'a'; size];
+        input.push(b'\n');
+        input.extend_from_slice(b"{\"id\":\"after\"}\n");
+
+        let mut reader = Cursor::new(input);
+        let first = read_line_bounded(&mut reader).await.unwrap();
+        assert_eq!(first, Some(String::new())); // sentinel: oversized request
+        let second = read_line_bounded(&mut reader).await.unwrap();
+        assert_eq!(second, Some("{\"id\":\"after\"}".into()));
     }
 }

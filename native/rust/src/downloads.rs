@@ -14,10 +14,12 @@ use anyhow::{Context, Result};
 use futures_util::StreamExt;
 use serde::Serialize;
 use sha1::{Digest, Sha1};
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use tokio::io::AsyncReadExt;
 
 use crate::protocol::write_event;
 
@@ -80,12 +82,22 @@ pub struct DownloadCompleteEvent {
     pub failed: Vec<String>,
 }
 
-fn sha1_matches(path: &Path, expected: &str) -> bool {
-    let Ok(bytes) = std::fs::read(path) else {
+/// Streams a file and computes its sha1 without ever loading it fully into memory
+/// (a large library/asset can be hundreds of MB — a blocking `std::fs::read` inside
+/// the async runtime would stall every other in-flight download in the batch).
+async fn sha1_matches(path: &Path, expected: &str) -> bool {
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
         return false;
     };
     let mut hasher = Sha1::new();
-    hasher.update(&bytes);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match file.read(&mut buf).await {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return false,
+        }
+    }
     let digest = hex::encode(hasher.finalize());
     digest.eq_ignore_ascii_case(expected)
 }
@@ -105,6 +117,9 @@ pub async fn download_batch(
     let downloaded_bytes = Arc::new(AtomicU64::new(0));
     let total_bytes: u64 = tasks.iter().filter_map(|t| t.size).sum();
     let failed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    // Per-file bytes already counted toward `downloaded_bytes`, so a retry can subtract
+    // the previous attempt's contribution instead of double-counting it in the progress.
+    let file_bytes: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Cancelled before any work started? Report immediately.
     if is_cancelled(task_id) {
@@ -125,6 +140,7 @@ pub async fn download_batch(
         let client = client.clone();
         let semaphore = Arc::clone(&semaphore);
         let downloaded_bytes = Arc::clone(&downloaded_bytes);
+        let file_bytes = Arc::clone(&file_bytes);
         let failed = Arc::clone(&failed);
         let task_id = task_id.to_string();
 
@@ -139,7 +155,7 @@ pub async fn download_batch(
             // the file merely exists, since there's nothing to verify it against.
             if let Some(expected_sha1) = &task.sha1 {
                 let already_present = task.dest.is_file()
-                    && (expected_sha1.is_empty() || sha1_matches(&task.dest, expected_sha1));
+                    && (expected_sha1.is_empty() || sha1_matches(&task.dest, expected_sha1).await);
                 if already_present {
                     if let Some(size) = task.size {
                         downloaded_bytes.fetch_add(size, Ordering::Relaxed);
@@ -168,7 +184,7 @@ pub async fn download_batch(
                 if is_cancelled(&task_id) {
                     break;
                 }
-                match download_single(&client, &task, &downloaded_bytes, total_bytes, &task_id, index, file_count, request_timeout).await {
+                match download_single(&client, &task, &downloaded_bytes, &file_bytes, total_bytes, &task_id, index, file_count, request_timeout).await {
                     Ok(()) => {
                         last_err = None;
                         break;
@@ -219,6 +235,7 @@ async fn download_single(
     client: &reqwest::Client,
     task: &DownloadTask,
     downloaded_bytes: &AtomicU64,
+    file_bytes: &Mutex<HashMap<String, u64>>,
     total_bytes: u64,
     task_id: &str,
     index: usize,
@@ -229,64 +246,113 @@ async fn download_single(
         tokio::fs::create_dir_all(parent).await?;
     }
 
+    // A retried attempt must not double-count the bytes this file already contributed:
+    // subtract the previous attempt's recorded bytes before streaming the file again.
+    let dest_key = task.dest.to_string_lossy().to_string();
+    if let Ok(mut map) = file_bytes.lock() {
+        if let Some(prior) = map.remove(&dest_key) {
+            downloaded_bytes.fetch_sub(prior, Ordering::Relaxed);
+        }
+    }
+    // Track this attempt's own transfer separately so it can be recorded/rolled back.
+    let mut attempt_bytes: u64 = 0;
+
     let tmp_path = task.dest.with_extension("part");
     if is_cancelled(task_id) {
         let _ = tokio::fs::remove_file(&tmp_path).await;
         return Err(anyhow::Error::new(DownloadCancelled));
     }
 
-    let mut builder = client.get(&task.url);
-    if let Some(t) = request_timeout {
-        builder = builder.timeout(t);
-    }
-    let resp = builder
-        .send()
-        .await
-        .with_context(|| format!("request failed for {}", task.url))?
-        .error_for_status()
-        .with_context(|| format!("server returned an error for {}", task.url))?;
+    // The whole transfer is one block so that ANY failure path — mid-stream network
+    // error, write error, flush error, rename error — records this attempt's bytes
+    // exactly once. Without this, a retry after a mid-stream failure could not
+    // subtract the previous attempt's contribution from the shared counter and the
+    // progress would double-count those bytes.
+    let result: Result<()> = (async {
+        let mut builder = client.get(&task.url);
+        if let Some(t) = request_timeout {
+            builder = builder.timeout(t);
+        }
+        let resp = builder
+            .send()
+            .await
+            .with_context(|| format!("request failed for {}", task.url))?
+            .error_for_status()
+            .with_context(|| format!("server returned an error for {}", task.url))?;
 
-    let mut file = tokio::fs::File::create(&tmp_path).await?;
-    let mut stream = resp.bytes_stream();
+        let mut file = tokio::fs::File::create(&tmp_path).await?;
+        let mut stream = resp.bytes_stream();
 
-    use tokio::io::AsyncWriteExt;
-    while let Some(chunk) = stream.next().await {
+        use tokio::io::AsyncWriteExt;
+        while let Some(chunk) = stream.next().await {
+            if is_cancelled(task_id) {
+                // A cancelled download must not leave a corrupted half-written file behind.
+                drop(file);
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(anyhow::Error::new(DownloadCancelled));
+            }
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            attempt_bytes += chunk.len() as u64;
+            let now = downloaded_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
+            write_event(
+                "download.progress",
+                DownloadProgressEvent {
+                    task_id: task_id.to_string(),
+                    label: task.label.clone(),
+                    bytes_downloaded: now,
+                    total_bytes,
+                    file_index: index + 1,
+                    file_count,
+                },
+            );
+        }
+        file.flush().await?;
+        drop(file);
+
         if is_cancelled(task_id) {
-            // A cancelled download must not leave a corrupted half-written file behind.
-            drop(file);
             let _ = tokio::fs::remove_file(&tmp_path).await;
             return Err(anyhow::Error::new(DownloadCancelled));
         }
-        let chunk = chunk?;
-        file.write_all(&chunk).await?;
-        let now = downloaded_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
-        write_event(
-            "download.progress",
-            DownloadProgressEvent {
-                task_id: task_id.to_string(),
-                label: task.label.clone(),
-                bytes_downloaded: now,
-                total_bytes,
-                file_index: index + 1,
-                file_count,
-            },
-        );
-    }
-    file.flush().await?;
-    drop(file);
 
-    if is_cancelled(task_id) {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(anyhow::Error::new(DownloadCancelled));
+        if let Some(expected) = &task.sha1 {
+            if !expected.is_empty() && !sha1_matches(&tmp_path, expected).await {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                anyhow::bail!("sha1 mismatch for {}", task.label);
+            }
+        }
+
+        tokio::fs::rename(&tmp_path, &task.dest).await?;
+        Ok(())
+    })
+    .await;
+
+    if result.is_err() {
+        // A failed attempt still transferred bytes; record them so a later retry can
+        // subtract this attempt's contribution instead of double-counting it. The
+        // original error (including DownloadCancelled, which the retry loop downcasts
+        // for) is returned unchanged.
+        record_file_bytes(file_bytes, &dest_key, &downloaded_bytes, attempt_bytes);
+        return result;
     }
 
-    if let Some(expected) = &task.sha1 {
-        if !expected.is_empty() && !sha1_matches(&tmp_path, expected) {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
-            anyhow::bail!("sha1 mismatch for {}", task.label);
+    // Success: record the bytes this attempt transferred so a later retry can subtract them.
+    if let Ok(mut map) = file_bytes.lock() {
+        map.insert(dest_key, attempt_bytes);
+    }
+    Ok(())
+}
+
+/// Records how many bytes a file's latest attempt contributed, folding them into the
+/// shared counter (replacing, never accumulating — a retry's subtraction needs the
+/// *latest* figure, not the running sum of every attempt).
+fn record_file_bytes(file_bytes: &Mutex<HashMap<String, u64>>, dest_key: &str, downloaded_bytes: &AtomicU64, attempt_bytes: u64) {
+    if let Ok(mut map) = file_bytes.lock() {
+        let prior = map.remove(dest_key).unwrap_or(0);
+        map.insert(dest_key.to_string(), attempt_bytes);
+        // Keep the global counter consistent: drop the old figure, keep the new one.
+        if prior > 0 {
+            downloaded_bytes.fetch_sub(prior, Ordering::Relaxed);
         }
     }
-
-    tokio::fs::rename(&tmp_path, &task.dest).await?;
-    Ok(())
 }

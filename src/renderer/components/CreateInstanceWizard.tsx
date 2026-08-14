@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Loader2, AlertCircle, RotateCcw } from "lucide-react";
-import type { CreateInstanceInput, InstanceRecord, VersionManifestEntry } from "@shared/types/ipc";
+import type { InstanceRecord, VersionManifestEntry } from "@shared/types/ipc";
 import { LOADERS, fetchLoaderVersions, preferredLoaderVersion, type LoaderId } from "../lib/loaders";
 
 export function CreateInstanceWizard({

@@ -181,23 +181,8 @@ pub async fn get_loader_versions(client: &reqwest::Client, game_version: &str) -
 }
 
 #[derive(Debug, Deserialize)]
-struct FabricLaunchMeta {
-    #[serde(rename = "mainClass")]
-    main_class: FabricMainClass,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum FabricMainClass {
-    Simple(String),
-    PerSide { client: String },
-}
-
-#[derive(Debug, Deserialize)]
 struct FabricProfileJson {
     id: String,
-    #[serde(rename = "inheritsFrom")]
-    inherits_from: String,
     libraries: Vec<FabricLibrary>,
     #[serde(rename = "mainClass")]
     main_class: FabricMainClassField,

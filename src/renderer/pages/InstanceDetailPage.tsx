@@ -20,6 +20,7 @@ import {
   Archive,
   Plus,
   Download,
+  Star,
 } from "lucide-react";
 import type { BackupRecord, InstanceHealthReport, InstanceHealthCheck, InstanceRecord, JavaInstallation, ModrinthSearchHit } from "@shared/types/ipc";
 import { useLaunchStore, launchInstance } from "../stores/useLaunchStore";
@@ -31,7 +32,9 @@ import { ModDetailsModal } from "../components/ModDetailsModal";
 import { CrashBanner } from "../components/CrashBanner";
 import { InstanceStateBadge } from "../components/InstanceStateBadge";
 import { friendlyErrorMessage } from "../lib/coreErrors";
+import { toggleInstanceFavorite } from "../lib/instanceFavorites";
 import { formatBytes } from "../utils/format";
+import { stripAnsi } from "../utils/consoleText";
 import { toast } from "../stores/useToastStore";
 
 const TABS = ["Overview", "Mods", "Backups", "Console"] as const;
@@ -48,7 +51,9 @@ export default function InstanceDetailPage() {
   const logRef = useRef<HTMLDivElement>(null);
 
   const logs = useLaunchStore((s) => (id ? s.logsByInstance[id] ?? [] : []));
-  const state = id ? useInstanceState(id) : "READY";
+  // useInstanceState is a hook, so it must be called unconditionally; an unknown id
+  // simply derives READY (the page's "not found" guard handles the display).
+  const state = useInstanceState(id ?? "missing");
   const running = state === "RUNNING" || state === "STOPPING";
   const launching = state === "LAUNCHING" || state === "DOWNLOADING" || state === "INSTALLING";
   const crashed = state === "CRASHED";
@@ -207,6 +212,19 @@ export default function InstanceDetailPage() {
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() =>
+              instance &&
+              toggleInstanceFavorite(instance)
+                .then((updated) => setInstance((prev) => (prev && prev.id === updated.id ? updated : prev)))
+                .catch(() => undefined)
+            }
+            className={`yz-btn-secondary ${instance.favorite ? "text-noxara-white" : ""}`}
+            title={instance.favorite ? "Unfavorite" : "Favorite"}
+            aria-label={instance.favorite ? "Unfavorite" : "Favorite"}
+          >
+            <Star size={16} fill={instance.favorite ? "currentColor" : "none"} />
+          </button>
           {running ? (
             <button onClick={handleKill} className="yz-btn-danger px-5">
               <X size={16} /> Kill Instance
@@ -302,7 +320,19 @@ export default function InstanceDetailPage() {
               }}
             />
             <InfoRow label="Loader" value={loaderLabel(instance.loader, instance.loaderVersion)} />
-            <InfoRow label="Memory" value={`${instance.minRamMb} – ${instance.maxRamMb} MB`} />
+            <MemoryEditor
+              minRamMb={instance.minRamMb}
+              maxRamMb={instance.maxRamMb}
+              onChanged={async (minRamMb, maxRamMb) => {
+                try {
+                  const updated = await window.noxara.updateInstance(instance.id, { minRamMb, maxRamMb });
+                  setInstance(updated);
+                  toast.success("Memory settings saved");
+                } catch (e) {
+                  toast.error("Couldn't change memory", e instanceof Error ? e.message : undefined);
+                }
+              }}
+            />
             <InfoRow label="Created" value={new Date(instance.createdAt).toLocaleDateString()} />
             <InfoRow label="Last Played" value={instance.lastPlayedAt ? new Date(instance.lastPlayedAt).toLocaleString() : "Never"} />
           </div>
@@ -408,7 +438,7 @@ export default function InstanceDetailPage() {
                       second: "2-digit",
                     })}
                   </span>
-                  {entry.line}
+                  {stripAnsi(entry.line)}
                 </div>
               ))
             )}
@@ -439,6 +469,104 @@ function InfoRow({ label, value }: { label: string; value: string }) {
     <div className="yz-card px-4 py-3">
       <div className="yz-label mb-1">{label}</div>
       <div className="text-sm text-noxara-text">{value}</div>
+    </div>
+  );
+}
+
+const MIN_RAM_MB = 512;
+
+/** Per-instance memory editor. Mirrors the backend's validation (minimum 512 MB,
+ * maximum at least as large as the minimum, and never more than a safe 90% share of
+ * the machine's RAM) so the user gets immediate inline feedback instead of a failure
+ * only after they hit save. */
+function MemoryEditor({
+  minRamMb,
+  maxRamMb,
+  onChanged,
+}: {
+  minRamMb: number;
+  maxRamMb: number;
+  onChanged: (minRamMb: number, maxRamMb: number) => void | Promise<void>;
+}) {
+  const [min, setMin] = useState(String(minRamMb));
+  const [max, setMax] = useState(String(maxRamMb));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [totalSystemMb, setTotalSystemMb] = useState<number | null>(null);
+
+  useEffect(() => {
+    window.noxara
+      .getSystemInfo()
+      .then((info) => setTotalSystemMb(info.totalRamMb))
+      .catch(() => setTotalSystemMb(null));
+  }, []);
+
+  function validate(nextMin: number, nextMax: number): string | null {
+    if (!Number.isFinite(nextMin) || nextMin < MIN_RAM_MB) {
+      return `Minimum RAM must be at least ${MIN_RAM_MB} MB`;
+    }
+    if (!Number.isFinite(nextMax) || nextMax < nextMin) {
+      return "Maximum RAM cannot be lower than minimum RAM";
+    }
+    if (totalSystemMb !== null && nextMax > totalSystemMb * 0.9) {
+      return `Maximum RAM exceeds a safe share of this system's ~${totalSystemMb} MB RAM`;
+    }
+    return null;
+  }
+
+  async function handleSave() {
+    const nextMin = Number(min);
+    const nextMax = Number(max);
+    const err = validate(nextMin, nextMax);
+    setError(err);
+    if (err) return;
+    setSaving(true);
+    try {
+      await onChanged(nextMin, nextMax);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="yz-card px-4 py-3">
+      <div className="flex items-center justify-between mb-1">
+        <span className="yz-label">Memory (min – max)</span>
+        {saving && <Loader2 size={12} className="animate-spin text-noxara-muted" />}
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          className="yz-input w-full text-sm"
+          type="number"
+          min={MIN_RAM_MB}
+          step={256}
+          value={min}
+          onChange={(e) => setMin(e.target.value)}
+          aria-label="Minimum memory in MB"
+        />
+        <span className="text-noxara-muted">–</span>
+        <input
+          className="yz-input w-full text-sm"
+          type="number"
+          min={MIN_RAM_MB}
+          step={256}
+          value={max}
+          onChange={(e) => setMax(e.target.value)}
+          aria-label="Maximum memory in MB"
+        />
+        <span className="text-xs text-noxara-muted whitespace-nowrap">MB</span>
+        <button className="yz-btn-ghost text-xs" onClick={handleSave} disabled={saving}>
+          Save
+        </button>
+      </div>
+      {error ? (
+        <p className="text-[11px] text-noxara-error mt-1.5">{error}</p>
+      ) : (
+        <p className="text-[11px] text-noxara-muted mt-1.5">
+          Per-instance RAM override. Higher maximum RAM lets heavier modpacks run, but
+          leaving too little for the rest of your system can cause slowdowns.
+        </p>
+      )}
     </div>
   );
 }

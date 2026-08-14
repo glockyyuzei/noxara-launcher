@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { coreBridge } from "./core-bridge";
+import { NOXARA_USER_AGENT } from "./http";
 import { getSettings } from "./settings";
 import { librariesDir, assetsDir, versionsDir } from "../filesystem/paths";
 
@@ -99,7 +100,10 @@ export async function ensureVersionAssetsAndLibraries(
   }
 
   // Asset index + objects
-  const assetIndexResp = await fetch(versionDetail.assetIndex.url);
+  const assetIndexResp = await fetchWithTimeout(versionDetail.assetIndex.url, 30_000);
+  if (!assetIndexResp.ok) {
+    throw new Error(`Failed to download asset index (HTTP ${assetIndexResp.status}) for ${versionDetail.id}.`);
+  }
   const assetIndex = (await assetIndexResp.json()) as { objects: Record<string, { hash: string; size: number }> };
   const objectsDir = path.join(assetDir, "objects");
   const indexesDir = path.join(assetDir, "indexes");
@@ -119,22 +123,30 @@ export async function ensureVersionAssetsAndLibraries(
 
   const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
   const settings = getSettings();
-  const failed = await coreBridge.call<{ failed: string[] }>(
-    "downloads.batch",
-    {
-      taskId,
-      tasks,
-      maxConcurrency: settings.maxConcurrentDownloads,
-      maxAttempts: settings.downloadRetryCount,
-      perRequestTimeoutSec: settings.downloadTimeoutSec,
-    },
-    DOWNLOAD_TIMEOUT_MS
-  );
-  if (failed.failed.length > 0) {
+  // Chunk the batch so a full-version asset list never becomes a single gigantic
+  // JSON-RPC message that can exceed the core bridge's message-size guard.
+  const BATCH_CHUNK_SIZE = 512;
+  const failed: string[] = [];
+  for (let i = 0; i < tasks.length; i += BATCH_CHUNK_SIZE) {
+    const chunk = tasks.slice(i, i + BATCH_CHUNK_SIZE);
+    const result = await coreBridge.call<{ failed: string[] }>(
+      "downloads.batch",
+      {
+        taskId,
+        tasks: chunk,
+        maxConcurrency: settings.maxConcurrentDownloads,
+        maxAttempts: settings.downloadRetryCount,
+        perRequestTimeoutSec: settings.downloadTimeoutSec,
+      },
+      DOWNLOAD_TIMEOUT_MS
+    );
+    failed.push(...result.failed);
+  }
+  if (failed.length > 0) {
     // Only client jar, libraries, and natives are launch-critical. A handful of missed
     // asset files (often background music tracks) shouldn't block launch — Minecraft
     // tolerates a missing sound asset far better than it tolerates never starting.
-    const criticalFailures = failed.failed.filter((label) => !label.startsWith("asset:"));
+    const criticalFailures = failed.filter((label) => !label.startsWith("asset:"));
     if (criticalFailures.length > 0) {
       throw new Error(
         `${criticalFailures.length} required file(s) failed to download; try Repair Instance. ` +
@@ -144,11 +156,30 @@ export async function ensureVersionAssetsAndLibraries(
   }
 
   if (nativeJarPaths.length > 0) {
-    await coreBridge.call("natives.extract", {
-      jarPaths: nativeJarPaths,
-      destDir: nativesDir,
-    });
+    const marker = path.join(nativesDir, ".noxara-natives-complete");
+    // Re-extract only when this instance's natives have never been fully extracted;
+    // avoids unzipping every native jar on every launch. Repair/launch recreating the
+    // natives dir naturally re-extracts.
+    if (!fs.existsSync(marker)) {
+      await coreBridge.call("natives.extract", {
+        jarPaths: nativeJarPaths,
+        destDir: nativesDir,
+      });
+      fs.writeFileSync(marker, JSON.stringify({ version: versionDetail.id, jars: nativeJarPaths }));
+    }
   }
 
   return { clientJarPath, librariesDirPath: libDir, assetsDirPath: assetDir };
+}
+
+/** `fetch` with an AbortSignal timeout — fails instead of hanging forever. Sends the
+ * standard Noxara User-Agent (Mojang's asset endpoint otherwise sees a default UA). */
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { signal: controller.signal, headers: { "User-Agent": NOXARA_USER_AGENT } });
+  } finally {
+    clearTimeout(timer);
+  }
 }

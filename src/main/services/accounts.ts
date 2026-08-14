@@ -277,11 +277,16 @@ export async function resolveMinecraftSession(
   // about the accounts service, but the accounts service needs its token-exchange chain.
   const { refreshMsaToken, completeMinecraftLogin } = await import("../auth/microsoft");
 
+  // Microsoft rotates the refresh token on every use. Persist the newly-issued one
+  // IMMEDIATELY after the refresh returns — not after the whole Minecraft chain — so
+  // that a failure later in the chain (e.g. an Akamai 403 on login_with_xbox) can
+  // never strand us on a burned token. The refresh already consumed the old one; if
+  // we only saved the new token on full success, a chain failure would leave both the
+  // old (now-invalid) and new (never-saved) tokens unusable, forcing a full re-login.
   const refreshed = await refreshMsaToken(refreshToken);
-  const session = await completeMinecraftLogin(refreshed.accessToken, refreshed.refreshToken);
-
-  // Persist Microsoft's newly-rotated refresh token — see doc comment above.
   await keytar.setPassword(KEYTAR_SERVICE, account.id, refreshed.refreshToken);
+
+  const session = await completeMinecraftLogin(refreshed.accessToken, refreshed.refreshToken);
 
   const resolved: ResolvedMinecraftSession = {
     username: account.username,

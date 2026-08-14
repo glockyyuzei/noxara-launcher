@@ -350,18 +350,16 @@ pub fn build_launch_args(
     args.extend(game_args);
 
     if instance.width.is_some() && instance.height.is_some() && !args.iter().any(|a| a == "--width") {
-        // Only the legacy/fallback branches need --width/--height appended explicitly;
-        // the modern branch gets them via ${resolution_width}/${resolution_height} if
-        // (and only if) the version JSON's rules ask for them (has_custom_resolution).
-        // Vanilla/Forge version JSONs gate that behind a feature we don't set, so add
-        // them directly here too — an explicit --width/--height is always accepted by
-        // the game even when not requested by the JSON's own conditional args.
-        if detail.arguments.is_none() {
-            args.push("--width".to_string());
-            args.push(instance.width.unwrap().to_string());
-            args.push("--height".to_string());
-            args.push(instance.height.unwrap().to_string());
-        }
+        // Append an explicit --width/--height for every version family. Vanilla/Forge
+        // version JSONs gate resolution behind has_custom_resolution, a feature we never
+        // set, so the ${resolution_width}/${resolution_height} tokens in their conditional
+        // args are never substituted — without this the launcher's window-size setting
+        // silently does nothing on modern (1.13+) versions. An explicit --width/--height
+        // is always accepted by the game even when not requested by the JSON's args.
+        args.push("--width".to_string());
+        args.push(instance.width.unwrap().to_string());
+        args.push("--height".to_string());
+        args.push(instance.height.unwrap().to_string());
     }
 
     args.extend(instance.extra_game_args.iter().cloned());
@@ -394,6 +392,25 @@ fn redact(line: &str, secrets: &[String]) -> String {
 /// best-effort crash determination. The child is registered so `running_instances`
 /// / `stop_instance` can inspect and kill it from anywhere in the process.
 pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, access_token_to_redact: &str) -> Result<()> {
+    let instance_id = instance.instance_id.clone();
+
+    // Backstop against a double-launch of the same instance: if the previous JVM is
+    // still alive, refuse to spawn another. (Replacing the registry entry would drop
+    // the old Child handle and, with kill_on_drop(true), kill the running game.) The
+    // renderer guards the UI path, but the core must never silently kill a live game.
+    {
+        let mut reg = running_registry().lock().unwrap();
+        if let Some(existing) = reg.get_mut(&instance_id) {
+            match existing.try_wait() {
+                Ok(None) => bail!("instance {instance_id} is already running"),
+                Ok(Some(_)) => {
+                    // Previous process already exited — safe to replace.
+                }
+                Err(_) => bail!("could not determine state of instance {instance_id}"),
+            }
+        }
+    }
+
     let mut child = Command::new(&instance.java_path)
         .args(&args)
         .current_dir(&instance.instance_dir)
@@ -403,7 +420,6 @@ pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, acc
         .spawn()
         .context("failed to spawn Java process")?;
 
-    let instance_id = instance.instance_id.clone();
     write_event(
         "game.started",
         GameStartedEvent {

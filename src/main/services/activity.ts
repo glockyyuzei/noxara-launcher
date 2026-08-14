@@ -55,7 +55,7 @@ function emitUpdated(activity: ActivityRecord, terminal: boolean): void {
 }
 
 function snapshot(activity: InternalActivity): ActivityRecord {
-  const { control, ...record } = activity;
+  const { control: _control, ...record } = activity;
   return record;
 }
 

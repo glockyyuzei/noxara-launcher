@@ -16,6 +16,7 @@ import {
   Layers,
   Cpu,
   ArrowRight,
+  Star,
 } from "lucide-react";
 import type { InstanceRecord } from "@shared/types/ipc";
 import { InstanceCover } from "../components/InstanceCover";
@@ -29,6 +30,7 @@ import { useActivityStore } from "../stores/useActivityStore";
 import { selectActive } from "../components/ActivityIndicator";
 import { formatBytes, formatSpeed, formatEta } from "../utils/format";
 import { friendlyErrorMessage } from "../lib/coreErrors";
+import { toggleInstanceFavorite } from "../lib/instanceFavorites";
 import { toast } from "../stores/useToastStore";
 
 function loaderLabel(loader: InstanceRecord["loader"]): string {
@@ -248,7 +250,15 @@ function ContinuePlayingCard({ instance }: { instance: InstanceRecord }) {
 /* Featured instance card                                                     */
 /* -------------------------------------------------------------------------- */
 
-function InstanceCard({ instance, index }: { instance: InstanceRecord; index: number }) {
+function InstanceCard({
+  instance,
+  index,
+  onFavorite,
+}: {
+  instance: InstanceRecord;
+  index: number;
+  onFavorite: (updated: InstanceRecord) => void;
+}) {
   const state = useInstanceState(instance.id);
   const running = state === "RUNNING" || state === "STOPPING";
   const launching = state === "LAUNCHING" || state === "DOWNLOADING" || state === "INSTALLING";
@@ -293,11 +303,22 @@ function InstanceCard({ instance, index }: { instance: InstanceRecord; index: nu
       <Link to={`/instances/${instance.id}`} className="block focus:outline-none">
         <div className="relative">
           <InstanceCover loader={instance.loader} className="w-full aspect-video rounded-none border-0" compact />
-          {instance.favorite && (
-            <span className="absolute top-1.5 left-1.5 text-[9px] font-medium bg-black/70 backdrop-blur-sm text-noxara-white px-1.5 py-0.5 rounded">
-              ★
-            </span>
-          )}
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              toggleInstanceFavorite(instance)
+                .then(onFavorite)
+                .catch(() => undefined);
+            }}
+            aria-label={instance.favorite ? "Unfavorite" : "Favorite"}
+            title={instance.favorite ? "Unfavorite" : "Favorite"}
+            className={`absolute top-1.5 left-1.5 p-1 rounded bg-black/70 backdrop-blur-sm transition-colors ${
+              instance.favorite ? "text-noxara-white" : "text-noxara-muted hover:text-noxara-text"
+            }`}
+          >
+            <Star size={12} fill={instance.favorite ? "currentColor" : "none"} />
+          </button>
           <span className="absolute top-1.5 right-1.5">
             <InstanceStateBadge instanceId={instance.id} />
           </span>
@@ -608,7 +629,14 @@ export default function HomePage() {
               <p className="text-xs yz-label mb-2">Featured Instances</p>
               <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
                 {featured.map((i, idx) => (
-                  <InstanceCard key={i.id} instance={i} index={idx} />
+                  <InstanceCard
+                    key={i.id}
+                    instance={i}
+                    index={idx}
+                    onFavorite={(updated) =>
+                      setInstances((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))
+                    }
+                  />
                 ))}
               </div>
             </section>
@@ -619,7 +647,14 @@ export default function HomePage() {
             {recents.length > 0 ? (
               <div className="grid grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-2">
                 {recents.map((i, idx) => (
-                  <InstanceCard key={i.id} instance={i} index={idx} />
+                  <InstanceCard
+                    key={i.id}
+                    instance={i}
+                    index={idx}
+                    onFavorite={(updated) =>
+                      setInstances((prev) => prev.map((x) => (x.id === updated.id ? updated : x)))
+                    }
+                  />
                 ))}
               </div>
             ) : (

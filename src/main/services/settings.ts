@@ -33,7 +33,10 @@ export const DEFAULT_SETTINGS: LauncherSettings = {
   debugMode: false,
 };
 
-function clampSettings(s: Record<string, unknown>): LauncherSettings {
+/** Sanitizes a raw settings object against the defaults. Every read and write goes
+ * through this, so a corrupt/crafted stored value can never crash the app or produce
+ * nonsensical settings (negative RAM, absurd window sizes, etc.). Exported for tests. */
+export function clampSettings(s: Record<string, unknown>): LauncherSettings {
   const d = DEFAULT_SETTINGS;
   return {
     gameDir: typeof s.gameDir === "string" ? s.gameDir : d.gameDir,

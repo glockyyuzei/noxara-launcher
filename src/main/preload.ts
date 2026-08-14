@@ -36,7 +36,6 @@ import type {
 
 const api = {
   getVersionManifest: (forceRefresh?: boolean) => ipcRenderer.invoke(IPC_CHANNELS.getVersionManifest, forceRefresh),
-  getRecommendedJava: (versionId: string) => ipcRenderer.invoke(IPC_CHANNELS.getRecommendedJava, versionId),
 
   detectJava: () => ipcRenderer.invoke(IPC_CHANNELS.detectJava),
   testJavaPath: (path: string) => ipcRenderer.invoke(IPC_CHANNELS.testJavaPath, path),
@@ -132,10 +131,10 @@ const api = {
   removeServer: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.removeServer, id),
   pingServer: (address: string, port: number): Promise<ServerPingResult> =>
     ipcRenderer.invoke(IPC_CHANNELS.pingServer, address, port),
-  pickServerIcon: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.pickServerIcon),
 
   getSettings: () => ipcRenderer.invoke(IPC_CHANNELS.getSettings),
   setSettings: (partial: Record<string, unknown>) => ipcRenderer.invoke(IPC_CHANNELS.setSettings, partial),
+  getSystemInfo: () => ipcRenderer.invoke(IPC_CHANNELS.getSystemInfo),
   pickFolder: (title: string) => ipcRenderer.invoke(IPC_CHANNELS.pickFolder, title),
   pickJavaExecutable: () => ipcRenderer.invoke(IPC_CHANNELS.pickJavaExecutable),
   openDataDirectory: () => ipcRenderer.invoke(IPC_CHANNELS.openDataDirectory),
@@ -146,8 +145,6 @@ const api = {
   deleteSkin: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.deleteSkin, id),
   renameSkin: (id: string, name: string) => ipcRenderer.invoke(IPC_CHANNELS.renameSkin, id, name),
   getAccountSkin: (accountId: string) => ipcRenderer.invoke(IPC_CHANNELS.getAccountSkin, accountId),
-  setAccountSkin: (accountId: string, skinId: string | null) =>
-    ipcRenderer.invoke(IPC_CHANNELS.setAccountSkin, accountId, skinId),
   applySkin: (accountId: string, skinId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.applySkin, accountId, skinId),
   getAccountSkinTexture: (accountId: string) =>

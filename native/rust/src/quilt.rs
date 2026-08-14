@@ -152,8 +152,6 @@ pub async fn get_loader_versions(client: &reqwest::Client, game_version: &str) -
 #[derive(Debug, Deserialize)]
 struct QuiltProfileJson {
     id: String,
-    #[serde(rename = "inheritsFrom")]
-    inherits_from: String,
     libraries: Vec<QuiltLibrary>,
     #[serde(rename = "mainClass")]
     main_class: String,

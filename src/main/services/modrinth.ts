@@ -13,10 +13,14 @@ import type {
   ModrinthVersion,
   ModSearchQuery,
 } from "../../shared/types/ipc";
+import { fetchWithRetry } from "./http";
 
 const API_BASE = "https://api.modrinth.com/v2";
 const USER_AGENT = "NoxaraLauncher/0.1.0 (https://github.com/noxara-labs/noxara-launcher)";
 
+/** Modrinth is behind rate limits and occasionally throws 429/5xx under load. The
+ * shared retry helper honors Retry-After, backs off on 5xx, and caps each attempt so
+ * a hung API never blocks the UI. All retries are safe: these are read-only GETs. */
 async function modrinthFetch<T>(path: string, params?: Record<string, string>): Promise<T> {
   const url = new URL(`${API_BASE}${path}`);
   if (params) {
@@ -24,8 +28,18 @@ async function modrinthFetch<T>(path: string, params?: Record<string, string>): 
       if (v !== undefined && v !== "") url.searchParams.set(k, v);
     }
   }
-  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+  const res = await fetchWithRetry(url, { headers: { "User-Agent": USER_AGENT } }, { maxAttempts: 3 });
   if (!res.ok) {
+    // Distinguish "slow down" from "gone wrong" so the user sees actionable text.
+    if (res.status === 429) {
+      throw new Error("Modrinth is rate-limiting requests right now. Wait a moment and try again.");
+    }
+    if (res.status >= 500) {
+      throw new Error("Modrinth is having trouble right now (server error). Please try again shortly.");
+    }
+    if (res.status === 404) {
+      throw new Error("The requested Modrinth project or version no longer exists.");
+    }
     throw new Error(`Modrinth API error (${res.status}): ${res.statusText}`);
   }
   return (await res.json()) as T;

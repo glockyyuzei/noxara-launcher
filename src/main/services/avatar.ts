@@ -13,6 +13,7 @@
  * return null, letting the UI render a clean initial-based fallback.
  */
 import { nativeImage } from "electron";
+import { fetchWithTimeout } from "./http";
 
 /** Crops the front face of the head from a Minecraft skin texture and upscales it to a
  * displayable square. Mojang textures are 64x64; the head's front face lives in the
@@ -43,9 +44,7 @@ function cropHeadFromSkin(png: Buffer): Buffer | null {
 
 async function downloadBuffer(url: string): Promise<Buffer | null> {
   try {
-    const resp = await fetch(url, {
-      headers: { "User-Agent": "NoxaraLauncher/0.1 (+https://noxara.dev)" },
-    });
+    const resp = await fetchWithTimeout(url, {});
     if (!resp.ok) return null;
     const buf = Buffer.from(await resp.arrayBuffer());
     return buf.length > 0 ? buf : null;

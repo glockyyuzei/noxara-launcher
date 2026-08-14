@@ -6,7 +6,6 @@ import {
   ChevronDown,
   Coffee,
   Download,
-  Gamepad2,
   HardDrive,
   Image,
   Loader2,

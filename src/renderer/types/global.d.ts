@@ -52,7 +52,6 @@ declare global {
   interface Window {
     noxara: {
       getVersionManifest(forceRefresh?: boolean): Promise<VersionManifest>;
-      getRecommendedJava(versionId: string): Promise<{ majorVersion: number }>;
       detectJava(): Promise<JavaInstallation[]>;
       testJavaPath(path: string): Promise<JavaInstallation | null>;
       ensureJavaRuntime(majorVersion: number): Promise<JavaInstallation>;
@@ -115,9 +114,9 @@ declare global {
       updateServer(id: string, input: Partial<ServerInput>): Promise<ServerRecord>;
       removeServer(id: string): Promise<void>;
       pingServer(address: string, port: number): Promise<ServerPingResult>;
-      pickServerIcon(): Promise<string | null>;
       getSettings(): Promise<LauncherSettings>;
       setSettings(partial: Partial<LauncherSettings>): Promise<LauncherSettings>;
+      getSystemInfo(): Promise<SystemInfo>;
       pickFolder(title: string): Promise<string | null>;
       pickJavaExecutable(): Promise<string | null>;
       openDataDirectory(): Promise<void>;
@@ -126,7 +125,6 @@ declare global {
       deleteSkin(id: string): Promise<void>;
       renameSkin(id: string, name: string): Promise<SkinRecord>;
       getAccountSkin(accountId: string): Promise<SkinRecord | null>;
-      setAccountSkin(accountId: string, skinId: string | null): Promise<void>;
       applySkin(accountId: string, skinId: string): Promise<void>;
       getAccountSkinTexture(accountId: string): Promise<AccountSkinTexture | null>;
       windowMinimize(): void;

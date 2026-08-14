@@ -64,6 +64,7 @@ export function pingServer(address: string, port: number, timeoutMs = DEFAULT_TI
   return new Promise((resolve) => {
     const socket = net.createConnection({ host: address, port });
     socket.setNoDelay(true);
+    socket.setTimeout(timeoutMs);
 
     let buffer = Buffer.alloc(0);
     let settled = false;
@@ -82,11 +83,9 @@ export function pingServer(address: string, port: number, timeoutMs = DEFAULT_TI
 
     const succeed = (latency: number | null): void => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (pingTimer) clearTimeout(pingTimer);
-      socket.destroy();
-
+      // Parse the status payload BEFORE settling — if it's absent or malformed, treat
+      // the probe as failed (resolve offline) rather than deadlocking the caller on a
+      // settled-flag race where fail() becomes a no-op.
       let data: any = null;
       try {
         data = statusJson ? JSON.parse(statusJson) : null;
@@ -97,6 +96,10 @@ export function pingServer(address: string, port: number, timeoutMs = DEFAULT_TI
         fail();
         return;
       }
+      settled = true;
+      clearTimeout(timer);
+      if (pingTimer) clearTimeout(pingTimer);
+      socket.destroy();
       resolve({
         online: true,
         latencyMs: latency,

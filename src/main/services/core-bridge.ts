@@ -22,12 +22,32 @@ interface PendingCall {
   reject: (err: CoreBridgeError) => void;
   /** Set once the promise has settled so a late Rust response can't double-fire. */
   settled: boolean;
+  /** When a timed-out promise was rejected (used to sweep abandoned entries). */
+  rejectedAt?: number;
 }
+
+/** A single JSON-RPC line from the core is at most a few KB. If the buffer ever grows
+ * past this, the core is emitting a malformed/hostile line with no newline — reset it
+ * rather than let memory grow unbounded. */
+const MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+
+/** Matching cap for the request side: a single JSON-RPC request line must never exceed
+ * this. Real requests are a few KB; anything past the cap is a buggy/hostile caller.
+ * We reject it locally (structured `bad_request` error) instead of shipping it to the
+ * core, where Rust's stdin reader also enforces the same cap as defense-in-depth. */
+const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
+
+/** How long a timed-out (already-settled) call's id is kept waiting for its response
+ * before it's considered truly orphaned and swept. Long enough for slow Rust tasks to
+ * finish and log a "late response", short enough that a hung core can't pile up
+ * entries forever. */
+const SETTLED_TTL_MS = 60_000;
 
 export class CoreBridge extends EventEmitter {
   private proc: ChildProcessWithoutNullStreams | null = null;
   private pending = new Map<string, PendingCall>();
   private buffer = "";
+  private lastSweep = 0;
 
   start(): void {
     const binPath = this.resolveBinaryPath();
@@ -71,6 +91,13 @@ export class CoreBridge extends EventEmitter {
 
   private onStdout(chunk: string): void {
     this.buffer += chunk;
+    // Guard against a malformed/hostile core emitting an endless line with no newline:
+    // reset the buffer (dropping the partial line) instead of letting it grow forever.
+    if (this.buffer.length > MAX_BUFFER_BYTES) {
+      console.warn("[noxara-core] stdout buffer exceeded the size cap; discarding partial line");
+      this.buffer = "";
+      return;
+    }
     let newlineIndex: number;
     while ((newlineIndex = this.buffer.indexOf("\n")) !== -1) {
       const line = this.buffer.slice(0, newlineIndex).trim();
@@ -136,8 +163,20 @@ export class CoreBridge extends EventEmitter {
     if (!this.proc) {
       return Promise.reject(coreError("not_running", "noxara-core is not running"));
     }
+    this.sweepSettled();
     const id = randomUUID();
     const request = JSON.stringify({ id, method, params }) + "\n";
+
+    // Reject oversized requests locally rather than shipping them to the core. The
+    // byte count matters (UTF-8), not the char count.
+    if (Buffer.byteLength(request) > MAX_REQUEST_BYTES) {
+      return Promise.reject(
+        coreError(
+          "bad_request",
+          `The "${method}" request is too large to send to noxara-core (over ${MAX_REQUEST_BYTES} bytes).`
+        )
+      );
+    }
 
     return new Promise<T>((resolve, reject) => {
       const pending: PendingCall = {
@@ -161,6 +200,7 @@ export class CoreBridge extends EventEmitter {
         // instead of leaking. The promise has already rejected — callers retry on
         // `code === "timeout"`.
         pending.settled = true;
+        pending.rejectedAt = Date.now();
         reject(
           coreError(
             "timeout",
@@ -173,6 +213,21 @@ export class CoreBridge extends EventEmitter {
       this.pending.set(id, pending);
       this.proc!.stdin.write(request);
     });
+  }
+
+  /** Drops pending entries that timed out long ago and whose response is never coming
+   * (the Rust task truly died or never started). Kept briefly so a genuinely-late
+   * response still gets matched + logged instead of being silently orphaned; swept
+   * once per call so the map can't grow without bound. */
+  private sweepSettled(): void {
+    const now = Date.now();
+    if (now - this.lastSweep < 10_000) return;
+    this.lastSweep = now;
+    for (const [id, pending] of this.pending) {
+      if (pending.settled && pending.rejectedAt && now - pending.rejectedAt > SETTLED_TTL_MS) {
+        this.pending.delete(id);
+      }
+    }
   }
 }
 

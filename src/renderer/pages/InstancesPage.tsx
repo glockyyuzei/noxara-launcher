@@ -1,21 +1,18 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Plus, Boxes, X } from "lucide-react";
+import { Plus, Boxes, Star } from "lucide-react";
 import type { InstanceRecord } from "@shared/types/ipc";
 import { CreateInstanceWizard } from "../components/CreateInstanceWizard";
 import { InstanceCover } from "../components/InstanceCover";
 import { InstanceStateBadge } from "../components/InstanceStateBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
-import { launchInstance } from "../stores/useLaunchStore";
-import { friendlyErrorMessage } from "../lib/coreErrors";
-import { toast } from "../stores/useToastStore";
+import { toggleInstanceFavorite } from "../lib/instanceFavorites";
 
 export default function InstancesPage() {
   const [instances, setInstances] = useState<InstanceRecord[]>([]);
   const [showWizard, setShowWizard] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   function refresh() {
     setLoading(true);
@@ -26,17 +23,6 @@ export default function InstancesPage() {
   }
 
   useEffect(refresh, []);
-
-  async function handlePlay(id: string) {
-    setError(null);
-    try {
-      await launchInstance(id);
-    } catch (e) {
-      const message = friendlyErrorMessage(e);
-      setError(message);
-      toast.error("Could not launch Minecraft", message);
-    }
-  }
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
@@ -84,11 +70,22 @@ export default function InstancesPage() {
                 <span className="absolute top-1.5 right-1.5">
                   <InstanceStateBadge instanceId={i.id} />
                 </span>
-                {i.favorite && (
-                  <span className="absolute top-1.5 left-1.5 text-[9px] font-medium bg-black/70 backdrop-blur-sm text-noxara-white px-1.5 py-0.5 rounded">
-                    ★
-                  </span>
-                )}
+                <button
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleInstanceFavorite(i)
+                      .then((updated) => setInstances((prev) => prev.map((x) => (x.id === updated.id ? updated : x))))
+                      .catch(() => undefined);
+                  }}
+                  aria-label={i.favorite ? "Unfavorite" : "Favorite"}
+                  title={i.favorite ? "Unfavorite" : "Favorite"}
+                  className={`absolute top-1.5 left-1.5 p-1 rounded bg-black/70 backdrop-blur-sm transition-colors ${
+                    i.favorite ? "text-noxara-white" : "text-noxara-muted hover:text-noxara-text"
+                  }`}
+                >
+                  <Star size={12} fill={i.favorite ? "currentColor" : "none"} />
+                </button>
               </div>
               <div className="px-2 py-1.5">
                 <div className="text-sm font-medium truncate group-hover:text-noxara-white transition-colors">

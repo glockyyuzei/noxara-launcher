@@ -15,6 +15,16 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, "dist/renderer"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // three.js is large (~500 kB) and pinned; give it its own chunk so it's
+          // cached independently of the app code and only fetched when the SkinsPage
+          // route is actually opened.
+          three: ["three"],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

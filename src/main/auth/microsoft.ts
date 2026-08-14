@@ -9,8 +9,10 @@
  * as a "Public client / native" app with the Xbox Live sign-in permission, then set
  * NOXARA_MSA_CLIENT_ID below via environment/config. Without a real client ID, this code
  * is correct but cannot complete a login â€” there is no working substitute for that
- * credential, and this codebase does not fabricate one.
+* credential, and this codebase does not fabricate one.
  */
+
+import { fetchWithTimeout } from "../services/http";
 
 const CLIENT_ID = process.env.NOXARA_MSA_CLIENT_ID ?? "";
 const DEVICE_CODE_URL =
@@ -22,6 +24,11 @@ const MC_LOGIN_URL = "https://api.minecraftservices.com/authentication/login_wit
 const MC_PROFILE_URL = "https://api.minecraftservices.com/minecraft/profile";
 const MC_ENTITLEMENT_URL = "https://api.minecraftservices.com/entitlements/mcstore";
 const MC_SKINS_URL = "https://api.minecraftservices.com/minecraft/profile/skins";
+
+/** Every hop in the auth chain is an HTTP round-trip that must not hang the launch
+ * forever: cap each attempt so a stalled Microsoft/Xbox/Mojang endpoint fails fast
+ * and the shared withRetry backoff can decide whether it's worth another try. */
+const AUTH_TIMEOUT_MS = 15_000;
 
 // Some of these endpoints sit behind bot-protection (Akamai/WAF) that silently
 // 403s requests with no User-Agent header â€” Node's built-in fetch doesn't send one
@@ -117,14 +124,14 @@ function assertConfigured(): void {
 
 export async function requestDeviceCode(): Promise<DeviceCodeInfo> {
   assertConfigured();
-  const resp = await fetch(DEVICE_CODE_URL, {
+const resp = await fetchWithTimeout(DEVICE_CODE_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", ...COMMON_HEADERS },
     body: new URLSearchParams({
       client_id: CLIENT_ID,
       scope: "XboxLive.signin offline_access",
     }),
-  });
+  }, AUTH_TIMEOUT_MS);
   if (!resp.ok) throw new Error(`Failed to start device code flow: ${resp.status} ${await safeBodySnippet(resp)}`);
   const data = (await resp.json()) as {
     device_code: string;
@@ -154,7 +161,7 @@ export async function pollForToken(
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, intervalSeconds * 1000));
 
-    const resp = await fetch(TOKEN_URL, {
+    const resp = await fetchWithTimeout(TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", ...COMMON_HEADERS },
       body: new URLSearchParams({
@@ -162,7 +169,7 @@ export async function pollForToken(
         client_id: CLIENT_ID,
         device_code: deviceCode,
       }),
-    });
+    }, AUTH_TIMEOUT_MS);
     const data = (await resp.json()) as {
       access_token?: string;
       refresh_token?: string;
@@ -181,7 +188,7 @@ export async function pollForToken(
 }
 
 async function xboxLiveAuth(msaAccessToken: string): Promise<{ token: string; userHash: string }> {
-  const resp = await fetch(XBL_AUTH_URL, {
+  const resp = await fetchWithTimeout(XBL_AUTH_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json", ...COMMON_HEADERS },
     body: JSON.stringify({
@@ -193,7 +200,7 @@ async function xboxLiveAuth(msaAccessToken: string): Promise<{ token: string; us
       RelyingParty: "http://auth.xboxlive.com",
       TokenType: "JWT",
     }),
-  });
+  }, AUTH_TIMEOUT_MS);
   if (!resp.ok) {
     throw definitiveError(`Xbox Live authentication failed: ${resp.status} ${await safeBodySnippet(resp)}`);
   }
@@ -205,7 +212,7 @@ async function xstsAuth(xblToken: string): Promise<{ token: string; userHash: st
   // XSTS intermittently 403s/5xxs valid tokens behind Akamai â€” retry those, but
   // never a definitive 401 with an XErr code (account-level rejection).
   return withRetry(async () => {
-    const resp = await fetch(XSTS_AUTH_URL, {
+    const resp = await fetchWithTimeout(XSTS_AUTH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", ...COMMON_HEADERS },
       body: JSON.stringify({
@@ -213,7 +220,7 @@ async function xstsAuth(xblToken: string): Promise<{ token: string; userHash: st
         RelyingParty: "rp://api.minecraftservices.com/",
         TokenType: "JWT",
       }),
-    });
+    }, AUTH_TIMEOUT_MS);
     if (resp.status === 401) {
       const data = (await resp.json()) as { XErr?: number };
       if (data.XErr === 2148916233) {
@@ -238,11 +245,11 @@ async function loginToMinecraft(xstsToken: string, userHash: string): Promise<{ 
   // kind (it carries a ForbiddenOperationException body) and surface the real
   // errorMessage from the response so genuine rejections are actionable.
   return withRetry(async () => {
-    const resp = await fetch(MC_LOGIN_URL, {
+    const resp = await fetchWithTimeout(MC_LOGIN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", ...COMMON_HEADERS },
       body: JSON.stringify({ identityToken: `XBL3.0 x=${userHash};${xstsToken}` }),
-    });
+    }, AUTH_TIMEOUT_MS);
     if (!resp.ok) {
       const snippet = await safeBodySnippet(resp);
       const message = `Minecraft authentication failed (${resp.status}): ${snippet || "no additional details returned"}`;
@@ -254,9 +261,9 @@ async function loginToMinecraft(xstsToken: string, userHash: string): Promise<{ 
 }
 
 async function verifyOwnership(mcAccessToken: string): Promise<void> {
-  const resp = await fetch(MC_ENTITLEMENT_URL, {
+  const resp = await fetchWithTimeout(MC_ENTITLEMENT_URL, {
     headers: { Authorization: `Bearer ${mcAccessToken}`, ...COMMON_HEADERS },
-  });
+  }, AUTH_TIMEOUT_MS);
   if (!resp.ok) throw new Error(`Unable to verify Minecraft ownership: ${resp.status} ${await safeBodySnippet(resp)}`);
   const data = (await resp.json()) as { items?: unknown[] };
   if (!data.items || data.items.length === 0) {
@@ -267,9 +274,9 @@ async function verifyOwnership(mcAccessToken: string): Promise<void> {
 async function fetchProfile(
   mcAccessToken: string
 ): Promise<{ id: string; name: string; skinUrl: string | null; variant: "classic" | "slim" | null }> {
-  const resp = await fetch(MC_PROFILE_URL, {
+  const resp = await fetchWithTimeout(MC_PROFILE_URL, {
     headers: { Authorization: `Bearer ${mcAccessToken}`, ...COMMON_HEADERS },
-  });
+  }, AUTH_TIMEOUT_MS);
   if (resp.status === 404) throw new Error("This account does not have a Minecraft profile yet.");
   if (!resp.ok) throw new Error(`Failed to load Minecraft profile: ${resp.status} ${await safeBodySnippet(resp)}`);
   const data = (await resp.json()) as {
@@ -316,7 +323,7 @@ export async function completeMinecraftLogin(msaAccessToken: string, msaRefreshT
 
 export async function refreshMsaToken(refreshToken: string): Promise<{ accessToken: string; refreshToken: string }> {
   assertConfigured();
-  const resp = await fetch(TOKEN_URL, {
+const resp = await fetchWithTimeout(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", ...COMMON_HEADERS },
     body: new URLSearchParams({
@@ -325,7 +332,7 @@ export async function refreshMsaToken(refreshToken: string): Promise<{ accessTok
       refresh_token: refreshToken,
       scope: "XboxLive.signin offline_access",
     }),
-  });
+  }, AUTH_TIMEOUT_MS);
   if (!resp.ok) throw new Error("Failed to refresh Microsoft session; please sign in again.");
   const data = (await resp.json()) as { access_token: string; refresh_token: string };
   return { accessToken: data.access_token, refreshToken: data.refresh_token };
@@ -350,11 +357,11 @@ export async function uploadSkinToMojang(
   // doesn't accept â€” copying into a fresh Uint8Array gives it its own plain ArrayBuffer.
   form.append("file", new Blob([new Uint8Array(pngBytes)], { type: "image/png" }), "skin.png");
 
-  const resp = await fetch(MC_SKINS_URL, {
+  const resp = await fetchWithTimeout(MC_SKINS_URL, {
     method: "POST",
     headers: { Authorization: `Bearer ${mcAccessToken}`, ...COMMON_HEADERS },
     body: form,
-  });
+  }, AUTH_TIMEOUT_MS);
   if (!resp.ok) {
     const snippet = await safeBodySnippet(resp);
     throw new Error(`Mojang rejected the skin upload (${resp.status}): ${snippet || "no additional details returned"}`);

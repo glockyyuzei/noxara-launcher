@@ -20,10 +20,11 @@ import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { getDb } from "./database";
-import { getInstanceDirById, listInstances, createInstance } from "./instances";
+import { getInstanceDirById, listInstances, createInstance, deleteInstance } from "./instances";
 import { assertWithin, rootDir } from "../filesystem/paths";
 import { registerDownload, unregisterDownload, signalFor } from "./download-control";
 import { startActivity, updateActivity, progressActivity, succeedActivity, failActivity } from "./activity";
+import { fetchWithTimeout } from "./http";
 import { coreBridge } from "./core-bridge";
 import * as modrinth from "./modrinth";
 import type {
@@ -62,6 +63,11 @@ function modpackStagingDir(instanceDir: string): string {
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
+
+/** Hard ceiling for a single content file download attempt (respects the shared
+ * download timeout setting would be nicer, but these helpers don't read settings;
+ * the Rust batch downloads read the setting separately). */
+const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 function dirForCategory(instanceId: string, category: ContentCategory): string {
   const instanceDir = getInstanceDirById(instanceId);
@@ -123,7 +129,8 @@ async function downloadWithProgress(
   instanceId: string
 ): Promise<void> {
   // When the user hits Cancel on the Downloads page this signal aborts mid-stream.
-  const res = await fetch(url, { signal: signalFor(taskId) });
+  // The fetch also gets a hard timeout so a stalled server can't hang the install.
+  const res = await fetchWithTimeout(url, { signal: signalFor(taskId) }, DOWNLOAD_TIMEOUT_MS);
   if (!res.ok || !res.body) {
     throw new Error(`Download failed (${res.status}): ${res.statusText}`);
   }
@@ -164,6 +171,7 @@ async function downloadWithProgress(
     );
     fs.renameSync(tmpPath, destPath);
   } catch (err) {
+    await reader.cancel().catch(() => {});
     fileHandle.close();
     fs.rmSync(tmpPath, { force: true });
     throw err;
@@ -175,7 +183,8 @@ async function downloadWithProgress(
 
 async function downloadPackFile(url: string, destPath: string, sha1: string | null): Promise<void> {
   fs.mkdirSync(path.dirname(destPath), { recursive: true });
-  const res = await fetch(url);
+  // Modpack archives can be large; a stalled server must not hang the install.
+  const res = await fetchWithTimeout(url, {}, DOWNLOAD_TIMEOUT_MS);
   if (!res.ok) {
     throw new Error(`Download failed (${res.status}): ${res.statusText}`);
   }
@@ -298,6 +307,7 @@ async function installMrpackContents(
   const staging = modpackStagingDir(instanceDir);
   const extractDir = path.join(staging, `${opts.contentId}.extracted`);
   const createdModIds: string[] = [];
+  const createdModPaths: string[] = [];
   let contentId = opts.contentId;
 
   try {
@@ -369,6 +379,7 @@ async function installMrpackContents(
 
       const modId = randomUUID();
       createdModIds.push(modId);
+      createdModPaths.push(destPath);
       db.prepare(
         `INSERT INTO mods (id, instance_id, name, version, source, source_id, source_version_id, filename, enabled, sha1, game_version, loader)
          VALUES (?, ?, ?, ?, 'modpack', ?, ?, ?, 1, ?, ?, ?)`
@@ -378,7 +389,10 @@ async function installMrpackContents(
         entry.path.split("/").pop()?.replace(/\.(jar|zip)$/i, "") || "pack mod",
         opts.meta.versionNumber,
         opts.meta.sourceId,
-        entry.hashes?.sha1 ?? null,
+        // The mrpack index lists each file by path/hash only — there is no Modrinth
+        // version id to record, so leave it null rather than stuffing a SHA-1 into a
+        // column the update/repair logic reads as a version id.
+        null,
         safeFilename,
         actualSha1,
         opts.gameVersion,
@@ -427,6 +441,15 @@ async function installMrpackContents(
       const db = getDb();
       for (const modId of createdModIds) {
         db.prepare("DELETE FROM mods WHERE id = ? AND source = 'modpack'").run(modId);
+      }
+    }
+    // Also remove the .jar files we already downloaded into the instance's mods folder —
+    // leaving them behind would let the game load mods the pack install never completed.
+    for (const filePath of createdModPaths) {
+      try {
+        fs.rmSync(filePath, { force: true });
+      } catch {
+        // Best-effort cleanup — never mask the original failure.
       }
     }
     throw err;
@@ -596,19 +619,30 @@ export async function importModpackFromFile(
     const target = path.join(staging, `${contentId}.mrpack`);
     fs.copyFileSync(mrpackPath, target);
 
-    await installMrpackContents(instance.id, target, {
-      contentId,
-      gameVersion: instance.minecraftVersion,
-      loader: loader === "vanilla" ? null : loader,
-      meta: {
-        taskId: importTaskId,
-        packName: manifest.name ?? packName,
-        versionNumber: manifest.versionId ?? "unknown",
-        source: "local",
-        sourceId: null,
-        sourceVersionId: null,
-      },
-    });
+    try {
+      await installMrpackContents(instance.id, target, {
+        contentId,
+        gameVersion: instance.minecraftVersion,
+        loader: loader === "vanilla" ? null : loader,
+        meta: {
+          taskId: importTaskId,
+          packName: manifest.name ?? packName,
+          versionNumber: manifest.versionId ?? "unknown",
+          source: "local",
+          sourceId: null,
+          sourceVersionId: null,
+        },
+      });
+    } catch (err) {
+      // The instance was created purely for this import; don't leave a broken,
+      // half-installed instance behind when the pack contents fail to land.
+      try {
+        await deleteInstance(instance.id);
+      } catch {
+        // Best-effort cleanup — never mask the original import failure.
+      }
+      throw err;
+    }
 
     succeedActivity(importTaskId, { description: "Modpack imported" });
     return instance;

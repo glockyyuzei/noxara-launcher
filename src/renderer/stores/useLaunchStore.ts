@@ -50,7 +50,11 @@ interface LaunchState {
 
 function toggle(set: Set<string>, value: string, add: boolean): Set<string> {
   const next = new Set(set);
-  add ? next.add(value) : next.delete(value);
+  if (add) {
+    next.add(value);
+  } else {
+    next.delete(value);
+  }
   return next;
 }
 

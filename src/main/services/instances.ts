@@ -102,6 +102,9 @@ export async function createInstance(input: CreateInstanceInput): Promise<Instan
     status: "preparing",
   });
 
+  // Tracked so the catch block can clean up exactly the directory this create made.
+  let createdDir: string | null = null;
+
   try {
     // Resolve a real, currently-published loader version instead of trusting a
     // placeholder from the UI — this is what actually gets installed and launched.
@@ -139,6 +142,7 @@ export async function createInstance(input: CreateInstanceInput): Promise<Instan
 
     const id = randomUUID();
     const dir = instanceDir(`${slugifyInstanceName(input.name)}-${id.slice(0, 8)}`);
+    createdDir = dir;
 
     for (const sub of ["mods", "config", "saves", "resourcepacks", "shaderpacks", "logs", "screenshots", "crash-reports"]) {
       fs.mkdirSync(path.join(dir, sub), { recursive: true });
@@ -176,13 +180,31 @@ export async function createInstance(input: CreateInstanceInput): Promise<Instan
     succeedActivity(activityId, { description: "Instance created" });
     return rowToRecord(record);
   } catch (err) {
+    // Atomicity: if anything after the dirs were created fails (e.g. the DB insert),
+    // remove the directory tree so a failed create never leaves an orphan folder
+    // behind that later listing/cleanup can't account for.
+    if (createdDir) {
+      try {
+        fs.rmSync(createdDir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup — never mask the original failure.
+      }
+    }
     failActivity(activityId, err instanceof Error ? err.message : "Instance creation failed");
     throw err;
   }
 }
 
-export function deleteInstance(id: string): void {
+export async function deleteInstance(id: string): Promise<void> {
   const dir = getInstanceDirById(id);
+  // Refuse to delete an instance whose Minecraft process is still alive — removing the
+  // folder out from under a running JVM corrupts the instance and its files. Lazy
+  // require to avoid a circular import with launch.ts (which imports instances.ts).
+  const { listRunningInstances } = require("./launch") as typeof import("./launch");
+  const running = await listRunningInstances();
+  if (running.includes(id)) {
+    throw new Error("Stop the instance before deleting it.");
+  }
   getDb().prepare("DELETE FROM instances WHERE id = ?").run(id);
   // Only remove the directory after the DB row is gone, and only within the known
   // instances root — never a caller-supplied arbitrary path.
@@ -242,13 +264,14 @@ export function openInstanceFolder(id: string): void {
 }
 
 /** Editable per-instance settings. Only the fields the UI actually exposes today —
- * pinning a Java runtime, or changing memory — are updatable; everything else is
- * immutable once the instance exists. */
+ * pinning a Java runtime, changing memory, or favoriting — are updatable; everything
+ * else is immutable once the instance exists. */
 export interface UpdateInstanceInput {
   name?: string;
   javaPath?: string | null;
   minRamMb?: number;
   maxRamMb?: number;
+  favorite?: boolean;
 }
 
 /** Applies a partial update to an instance's mutable settings and returns the fresh
@@ -270,11 +293,14 @@ export function updateInstance(id: string, patch: UpdateInstanceInput): Instance
     throw new Error(`Requested ${maxRamMb} MB exceeds a safe share of this system's ${totalSystemMb} MB RAM`);
   }
 
-  db.prepare("UPDATE instances SET name = ?, java_path = ?, min_ram_mb = ?, max_ram_mb = ? WHERE id = ?").run(
+  db.prepare(
+    "UPDATE instances SET name = ?, java_path = ?, min_ram_mb = ?, max_ram_mb = ?, favorite = ? WHERE id = ?"
+  ).run(
     patch.name !== undefined ? patch.name.trim() : existing.name,
     patch.javaPath === undefined ? existing.java_path : patch.javaPath,
     minRamMb,
     maxRamMb,
+    patch.favorite === undefined ? existing.favorite : (patch.favorite ? 1 : 0),
     id
   );
 

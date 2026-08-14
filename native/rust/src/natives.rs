@@ -10,7 +10,16 @@ use std::path::{Path, PathBuf};
 
 /// Extracts every file in each jar (except META-INF/*) directly into `dest_dir`,
 /// skipping directory entries and any path that would escape dest_dir.
-pub fn extract_natives(jar_paths: &[PathBuf], dest_dir: &Path) -> Result<()> {
+/// Runs on a blocking worker so a launch never stalls the async runtime.
+pub async fn extract_natives(jar_paths: &[PathBuf], dest_dir: &Path) -> Result<()> {
+    let jar_paths = jar_paths.to_vec();
+    let dest_dir = dest_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || extract_natives_sync(&jar_paths, &dest_dir))
+        .await
+        .context("native extraction task failed")?
+}
+
+fn extract_natives_sync(jar_paths: &[PathBuf], dest_dir: &Path) -> Result<()> {
     fs::create_dir_all(dest_dir).context("failed to create natives directory")?;
 
     for jar_path in jar_paths {

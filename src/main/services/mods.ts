@@ -20,6 +20,7 @@ import { getInstanceDirById, listInstances } from "./instances";
 import { assertWithin } from "../filesystem/paths";
 import { registerDownload, unregisterDownload, signalFor } from "./download-control";
 import { startActivity, progressActivity, succeedActivity, failActivity, isActivityActive } from "./activity";
+import { fetchWithTimeout } from "./http";
 import * as modrinth from "./modrinth";
 import type {
   InstalledMod,
@@ -32,6 +33,9 @@ import type {
 
 /** Emits "progress" / "complete" for the IPC layer to forward to the renderer. */
 export const modDownloadEvents = new EventEmitter();
+
+/** Hard ceiling for a single mod file download attempt (mirrors content.ts). */
+const DOWNLOAD_TIMEOUT_MS = 120_000;
 
 interface ModRow {
   id: string;
@@ -96,7 +100,8 @@ async function downloadWithProgress(
   instanceId: string
 ): Promise<void> {
   // When the user hits Cancel on the Downloads page this signal aborts mid-stream.
-  const res = await fetch(url, { signal: signalFor(taskId) });
+  // The fetch also gets a hard timeout so a stalled server can't hang the install.
+  const res = await fetchWithTimeout(url, { signal: signalFor(taskId) }, DOWNLOAD_TIMEOUT_MS);
   if (!res.ok || !res.body) {
     throw new Error(`Download failed (${res.status}): ${res.statusText}`);
   }
@@ -137,6 +142,7 @@ async function downloadWithProgress(
     );
     fs.renameSync(tmpPath, destPath);
   } catch (err) {
+    await reader.cancel().catch(() => {});
     fileHandle.close();
     fs.rmSync(tmpPath, { force: true });
     throw err;

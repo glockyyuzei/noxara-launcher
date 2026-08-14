@@ -1,5 +1,4 @@
 import { ipcMain, BrowserWindow, shell, dialog } from "electron";
-import fs from "node:fs";
 import { IPC_CHANNELS } from "../../shared/types/ipc";
 import type { CreateInstanceInput, UpdateInstanceInput } from "../../shared/types/ipc";
 import { coreBridge } from "../services/core-bridge";
@@ -64,7 +63,6 @@ function safe<T extends unknown[], R>(fn: (...args: T) => Promise<R> | R) {
 
 export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle(IPC_CHANNELS.getVersionManifest, safe((_e, forceRefresh?: boolean) => mojangService.getVersionManifest(forceRefresh)));
-  ipcMain.handle(IPC_CHANNELS.getRecommendedJava, safe((_e, versionId: string) => mojangService.getRecommendedJava(versionId)));
 
   ipcMain.handle(IPC_CHANNELS.detectJava, safe(() => javaService.detectJava()));
   ipcMain.handle(IPC_CHANNELS.testJavaPath, safe((_e, path: string) => javaService.testJavaPath(path)));
@@ -287,31 +285,15 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     IPC_CHANNELS.pingServer,
     safe((_e, address: string, port: number) => pingServer(address, port))
   );
-  ipcMain.handle(
-    IPC_CHANNELS.pickServerIcon,
-    safe(async (): Promise<string | null> => {
-      const win = getWindow();
-      const result = await dialog.showOpenDialog(win!, {
-        title: "Choose a server icon (PNG)",
-        properties: ["openFile"],
-        filters: [{ name: "PNG image", extensions: ["png"] }],
-      });
-      if (result.canceled) return null;
-      const filePath = result.filePaths[0];
-      if (!filePath) return null;
-      const buf = fs.readFileSync(filePath);
-      if (buf.length > 2 * 1024 * 1024) {
-        throw new Error("Icon must be smaller than 2 MB.");
-      }
-      if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) {
-        throw new Error("The selected file isn't a PNG image.");
-      }
-      return `data:image/png;base64,${buf.toString("base64")}`;
-    })
-  );
 
   // Settings
   ipcMain.handle(IPC_CHANNELS.getSettings, safe(() => settingsService.getSettings()));
+  ipcMain.handle(
+    IPC_CHANNELS.getSystemInfo,
+    safe(() => ({
+      totalRamMb: Math.round(require("node:os").totalmem() / (1024 * 1024)),
+    }))
+  );
   ipcMain.handle(
     IPC_CHANNELS.setSettings,
     safe((_e, partial: Partial<LauncherSettings>) => {
@@ -364,12 +346,6 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     safe((_e, accountId: string) => skinsService.getAccountSkin(accountId))
   );
   ipcMain.handle(
-    IPC_CHANNELS.setAccountSkin,
-    safe((_e, accountId: string, skinId: string | null) =>
-      skinsService.setAccountSkin(accountId, skinId)
-    )
-  );
-  ipcMain.handle(
     IPC_CHANNELS.applySkin,
     safe((_e, accountId: string, skinId: string) => skinsService.applySkin(accountId, skinId))
   );
@@ -391,7 +367,11 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   ipcMain.on(IPC_CHANNELS.windowMaximize, () => {
     const win = getWindow();
     if (!win) return;
-    win.isMaximized() ? win.unmaximize() : win.maximize();
+    if (win.isMaximized()) {
+      win.unmaximize();
+    } else {
+      win.maximize();
+    }
   });
   ipcMain.on(IPC_CHANNELS.windowClose, () => getWindow()?.close());
 

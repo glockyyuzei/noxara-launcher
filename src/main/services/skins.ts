@@ -24,6 +24,7 @@ import { skinsDir } from "../filesystem/paths";
 import { assertWithin } from "../filesystem/paths";
 import { getAccountById, resolveMinecraftSession } from "./accounts";
 import { uploadSkinToMojang, fetchProfileForAvatar } from "../auth/microsoft";
+import { fetchWithTimeout } from "./http";
 import type { AccountSkinTexture, SkinRecord } from "../../shared/types/ipc";
 
 interface SkinRow {
@@ -152,7 +153,7 @@ export function getAccountSkin(accountId: string): SkinRecord | null {
  * null rather than throwing so the viewer can fall back to its default placeholder. */
 async function downloadPngDataUrl(url: string): Promise<string | null> {
   try {
-    const resp = await fetch(url, { headers: { "User-Agent": "NoxaraLauncher/0.1" } });
+    const resp = await fetchWithTimeout(url, {});
     if (!resp.ok) return null;
     const buf = Buffer.from(await resp.arrayBuffer());
     if (buf.length === 0) return null;

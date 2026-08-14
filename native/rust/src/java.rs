@@ -144,6 +144,25 @@ fn installed_java_path(dest_dir: &Path, component: &str) -> Option<PathBuf> {
     None
 }
 
+/// Marker written only AFTER a runtime install completes fully (all files downloaded,
+/// sha1-verified, executable bits applied). Its presence is what distinguishes a
+/// complete runtime from a cancelled/partial one.
+fn runtime_complete_marker(dest_dir: &Path, component: &str) -> PathBuf {
+    dest_dir.join(component).join(".noxara-runtime-complete")
+}
+
+/// True when a previously-installed runtime is genuinely complete. A lone
+/// `bin/java[.exe]` is NOT enough: a cancelled install can land the binary before the
+/// rest of the runtime files, and trusting it would make the next launch fail at spawn.
+/// When the marker is missing we re-verify (the batch downloader skips files that
+/// already pass sha1, so a partial runtime self-heals cheaply on the next ensure).
+fn runtime_installed(dest_dir: &Path, component: &str) -> bool {
+    if !runtime_complete_marker(dest_dir, component).is_file() {
+        return false;
+    }
+    installed_java_path(dest_dir, component).is_some()
+}
+
 /// Downloads (if needed) Mojang's official Java runtime for `component`/`major_version`
 /// into `dest_dir` and returns the absolute java executable path. Reuses an already
 /// installed runtime; otherwise downloads the per-file listing sha1-verified (no wrapper
@@ -160,15 +179,19 @@ pub async fn ensure_runtime(
     let dest = Path::new(dest_dir);
     std::fs::create_dir_all(dest)?;
 
-    // Already installed for this component? Use it directly (no network needed).
+    // Already installed for this component? Use it directly (no network needed). Only
+    // when the install actually completed (completion marker present) — never trust a
+    // lone java binary that a cancelled install may have landed early.
     if !component_hint.is_empty() {
-        if let Some(exe) = installed_java_path(dest, component_hint) {
-            return Ok(RuntimeInstallResult {
-                path: exe.to_string_lossy().to_string(),
-                component: component_hint.to_string(),
-                major_version,
-                downloaded: false,
-            });
+        if runtime_installed(dest, component_hint) {
+            if let Some(exe) = installed_java_path(dest, component_hint) {
+                return Ok(RuntimeInstallResult {
+                    path: exe.to_string_lossy().to_string(),
+                    component: component_hint.to_string(),
+                    major_version,
+                    downloaded: false,
+                });
+            }
         }
     }
 
@@ -217,14 +240,16 @@ pub async fn ensure_runtime(
         })?
     };
 
-    // Fast path: already present for the resolved component.
-    if let Some(exe) = installed_java_path(dest, &component) {
-        return Ok(RuntimeInstallResult {
-            path: exe.to_string_lossy().to_string(),
-            component,
-            major_version,
-            downloaded: false,
-        });
+    // Fast path: already present for the resolved component (and fully installed).
+    if runtime_installed(dest, &component) {
+        if let Some(exe) = installed_java_path(dest, &component) {
+            return Ok(RuntimeInstallResult {
+                path: exe.to_string_lossy().to_string(),
+                component,
+                major_version,
+                downloaded: false,
+            });
+        }
     }
 
     let entry = platform_runtimes
@@ -300,6 +325,11 @@ pub async fn ensure_runtime(
         }
     }
 
+    // Everything downloaded and verified — now mark the runtime complete so the fast
+    // path can trust it later. The marker is written only after success, so a cancelled
+    // install never reads back as "installed".
+    let _ = std::fs::write(runtime_complete_marker(dest, &component), b"ok\n");
+
     let exe = installed_java_path(dest, &component)
         .ok_or_else(|| anyhow!("Java runtime installed but java binary is missing"))?;
 
@@ -313,7 +343,16 @@ pub async fn ensure_runtime(
     })
 }
 
-pub fn detect_all() -> Vec<JavaInstallation> {
+/// Scans PATH/JAVA_HOME/common install dirs for JVMs and probes each one. Each probe
+/// spawns a real `java -version` subprocess (tens to hundreds of ms), so this runs on a
+/// blocking worker rather than stalling the async runtime during a detect-Java call.
+pub async fn detect_all() -> Vec<JavaInstallation> {
+    tokio::task::spawn_blocking(detect_all_sync)
+        .await
+        .unwrap_or_default()
+}
+
+fn detect_all_sync() -> Vec<JavaInstallation> {
     let mut candidates: HashSet<PathBuf> = HashSet::new();
 
     if let Ok(path_var) = std::env::var("PATH") {
@@ -468,6 +507,11 @@ fn parse_major_version(version: &str) -> u32 {
     }
 }
 
-pub fn test_java_path(path: &str) -> Option<JavaInstallation> {
-    probe_java_binary(Path::new(path))
+/// Probes a single Java binary (`java -version` subprocess); runs on a blocking worker
+/// so a slow or hung JVM probe never blocks the async runtime.
+pub async fn test_java_path(path: &str) -> Option<JavaInstallation> {
+    let path = path.to_string();
+    tokio::task::spawn_blocking(move || probe_java_binary(Path::new(&path)))
+        .await
+        .unwrap_or(None)
 }

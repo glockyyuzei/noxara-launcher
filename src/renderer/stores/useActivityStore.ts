@@ -57,7 +57,7 @@ function estimateSpeed(id: string, currentBytes: number | undefined, totalBytes:
   return { speedBytesPerSec, etaSeconds };
 }
 
-export const useActivityStore = create<ActivityState>((set, get) => ({
+export const useActivityStore = create<ActivityState>((set) => ({
   activities: [],
   recentIds: new Set(),
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Plus, Star, Copy, Pencil, Trash2, Server, Play, X, Check, ImageUp, Wifi, WifiOff } from "lucide-react";
+import { Plus, Star, Copy, Pencil, Trash2, Server, Play, X, Check } from "lucide-react";
 import type { InstanceRecord, ServerPingResult, ServerRecord } from "@shared/types/ipc";
 import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
