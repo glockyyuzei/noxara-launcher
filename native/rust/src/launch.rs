@@ -225,6 +225,32 @@ fn resolve_classpath(detail: &VersionDetail, libraries_dir: &Path, client_jar: &
     cp
 }
 
+/// Vanilla 1.13+ version JSONs list the auth/version flags in `arguments.game`,
+/// but Forge/NeoForge version JSONs omit them and expect the launcher to supply
+/// the standard set Minecraft's `Main.main` requires (accessToken, version, ...).
+/// Appends any of these flags that the resolved game args don't already contain.
+fn ensure_standard_game_args(game_args: &mut Vec<String>, subst: &HashMap<&str, String>) {
+    let required: &[(&str, &str)] = &[
+        ("--username", "auth_player_name"),
+        ("--version", "version_name"),
+        ("--gameDir", "game_directory"),
+        ("--assetsDir", "assets_root"),
+        ("--assetIndex", "assets_index_name"),
+        ("--uuid", "auth_uuid"),
+        ("--accessToken", "auth_access_token"),
+        ("--clientId", "clientid"),
+        ("--xuid", "auth_xuid"),
+        ("--userType", "user_type"),
+        ("--versionType", "version_type"),
+    ];
+    for (flag, token) in required {
+        if !game_args.iter().any(|a| a == flag) {
+            game_args.push(flag.to_string());
+            game_args.push(subst.get(*token).cloned().unwrap_or_default());
+        }
+    }
+}
+
 fn classpath_separator() -> &'static str {
     if cfg!(windows) {
         ";"
@@ -308,7 +334,18 @@ pub fn build_launch_args(
             jvm_args.push("-cp".to_string());
             jvm_args.push(classpath.clone());
         }
+        // Forge/NeoForge version JSONs deliberately omit a `-cp` entry from
+        // arguments.jvm (they only put bootstraplauncher/asm on the module
+        // path `-p`). BootstrapLauncher reads java.class.path to build its
+        // bootstrap module layer, so without an explicit classpath it finds no
+        // ModLauncher Consumer service and dies with NoSuchElementException at
+        // BootstrapLauncher.java:141. Append `-cp` unless the JSON provided one.
+        let needs_cp = !jvm_args.iter().any(|a| a == "-cp");
         args.extend(jvm_args);
+        if needs_cp {
+            args.push("-cp".to_string());
+            args.push(classpath.clone());
+        }
         args.push(detail.main_class.clone());
 
         if let Some(game) = arguments.get("game").and_then(Value::as_array) {
@@ -349,6 +386,11 @@ pub fn build_launch_args(
         game_args.push("--userType".to_string());
         game_args.push(account.user_type.clone());
     }
+
+    // Vanilla version JSONs carry the auth/version flags in arguments.game; Forge
+    // omits them and requires the launcher to supply them (see
+    // ensure_standard_game_args). Idempotent: already-present flags are untouched.
+    ensure_standard_game_args(&mut game_args, &subst);
 
     args.extend(game_args);
 
@@ -546,6 +588,7 @@ pub async fn stop_instance(instance_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mojang::{AssetIndexRef, DownloadArtifact, Library, LibraryDownloads, VersionDownloads};
 
     /// The Electron main process / renderer read game events as camelCase
     /// (instanceId, crashed, code, pid, stream, line). Regression guard against
@@ -582,5 +625,175 @@ mod tests {
         assert!(output_json.contains("\"stream\""), "got: {output_json}");
         assert!(output_json.contains("\"line\""), "got: {output_json}");
         assert!(!output_json.contains("instance_id"), "got: {output_json}");
+    }
+
+    /// Forge/NeoForge version JSONs omit `-cp ${classpath}` from arguments.jvm
+    /// (they only put bootstraplauncher/asm on the module path `-p`). Without an
+    /// explicit classpath, BootstrapLauncher can't find ModLauncher's Consumer
+    /// service and crashes with NoSuchElementException at BootstrapLauncher.java:141.
+    /// Regression guard: a Forge-style version must get a trailing `-cp <classpath>`,
+    /// while a vanilla-style one that already declares `-cp` must not be duplicated.
+    #[test]
+    fn forge_version_gets_explicit_classpath() {
+        let mut detail = VersionDetail {
+            id: "1.20.1-forge-47.4.22".to_string(),
+            main_class: "cpw.mods.bootstraplauncher.BootstrapLauncher".to_string(),
+            assets: "1.20".to_string(),
+            libraries: vec![Library {
+                name: "cpw.mods:modlauncher:10.0.9".to_string(),
+                rules: None,
+                downloads: Some(LibraryDownloads {
+                    artifact: Some(DownloadArtifact {
+                        url: String::new(),
+                        sha1: String::new(),
+                        size: 0,
+                    }),
+                    classifiers: None,
+                }),
+                natives: None,
+            }],
+            arguments: Some(serde_json::json!({
+                "jvm": [
+                    "-DignoreList=bootstraplauncher",
+                    "-p",
+                    "${library_directory}/cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar${classpath_separator}${library_directory}/cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar",
+                    "--add-modules",
+                    "ALL-MODULE-PATH"
+                ],
+                "game": []
+            })),
+            legacy_arguments: None,
+            downloads: VersionDownloads {
+                client: DownloadArtifact { url: String::new(), sha1: String::new(), size: 0 },
+                server: None,
+            },
+            asset_index: AssetIndexRef {
+                id: "1.20".to_string(),
+                url: String::new(),
+                sha1: String::new(),
+                size: 0,
+                total_size: None,
+            },
+            java_version: None,
+        };
+        let libs_dir = std::env::temp_dir().join("noxara-cp-test-libs");
+        std::fs::create_dir_all(libs_dir.join("cpw/mods/modlauncher/10.0.9")).unwrap();
+        let jar_path = libs_dir.join("cpw/mods/modlauncher/10.0.9/modlauncher-10.0.9.jar");
+        std::fs::write(&jar_path, b"fake jar contents").unwrap();
+        let client_jar = std::env::temp_dir().join("noxara-cp-test-client.jar");
+        std::fs::write(&client_jar, b"fake client jar").unwrap();
+
+        let instance = LaunchInstance {
+            instance_id: "inst-1".to_string(),
+            instance_dir: std::env::temp_dir().join("noxara-cp-test-inst").to_string_lossy().to_string(),
+            libraries_dir: libs_dir.to_string_lossy().to_string(),
+            client_jar: client_jar.to_string_lossy().to_string(),
+            assets_dir: std::env::temp_dir().join("noxara-cp-test-assets").to_string_lossy().to_string(),
+            natives_dir: std::env::temp_dir().join("noxara-cp-test-natives").to_string_lossy().to_string(),
+            java_path: "java".to_string(),
+            min_ram_mb: 512,
+            max_ram_mb: 1024,
+            width: None,
+            height: None,
+            extra_jvm_args: vec![],
+            extra_game_args: vec![],
+        };
+        let account = LaunchAccount {
+            username: "Player".to_string(),
+            uuid: "00000000-0000-0000-0000-000000000000".to_string(),
+            access_token: "token".to_string(),
+            user_type: "msa".to_string(),
+        };
+
+        let args = build_launch_args(&detail, &instance, &account).unwrap();
+
+        let cp_idx = args.iter().position(|a| a == "-cp").expect("Forge launch must include -cp");
+        // The classpath after -cp must reference the modlauncher jar (the exact
+        // concatenation is verified below rather than hardcoding a temp path).
+        let cp_value = &args[cp_idx + 1];
+        assert!(
+            cp_value.contains("modlauncher-10.0.9.jar"),
+            "classpath must contain modlauncher, got: {cp_value}"
+        );
+        assert!(
+            cp_value.contains("noxara-cp-test-client.jar"),
+            "classpath must contain the client jar, got: {cp_value}"
+        );
+        // Exactly one -cp: we must not duplicate the one vanilla provides.
+        assert_eq!(args.iter().filter(|a| a.as_str() == "-cp").count(), 1);
+
+        // Sanity: the module path entry got its tokens substituted.
+        assert!(args.iter().any(|a| a.contains("bootstraplauncher-1.1.2.jar")));
+
+        // Forge's arguments.game omits the auth/version flags Minecraft's Main.main
+        // requires; the launcher must supply them (MissingRequiredOptionsException:
+        // accessToken, version otherwise).
+        let joined = args.join(" ");
+        assert!(joined.contains("--accessToken"), "missing --accessToken in: {joined}");
+        assert!(joined.contains("--version"), "missing --version in: {joined}");
+        assert!(joined.contains("--username"), "missing --username in: {joined}");
+
+        let _ = std::fs::remove_file(&jar_path);
+        let _ = std::fs::remove_file(&client_jar);
+    }
+
+    /// Vanilla 1.13+ version JSONs already declare `-cp ${classpath}` in
+    /// arguments.jvm. The Forge fix must not append a second one.
+    #[test]
+    fn vanilla_version_does_not_duplicate_classpath() {
+        let detail = VersionDetail {
+            id: "1.20.1".to_string(),
+            main_class: "net.minecraft.client.main.Main".to_string(),
+            assets: "1.20".to_string(),
+            libraries: vec![],
+            arguments: Some(serde_json::json!({
+                "jvm": ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"],
+                "game": []
+            })),
+            legacy_arguments: None,
+            downloads: VersionDownloads {
+                client: DownloadArtifact { url: String::new(), sha1: String::new(), size: 0 },
+                server: None,
+            },
+            asset_index: AssetIndexRef {
+                id: "1.20".to_string(),
+                url: String::new(),
+                sha1: String::new(),
+                size: 0,
+                total_size: None,
+            },
+            java_version: None,
+        };
+        let instance = LaunchInstance {
+            instance_id: "inst-2".to_string(),
+            instance_dir: std::env::temp_dir().join("noxara-cp-test-inst2").to_string_lossy().to_string(),
+            libraries_dir: std::env::temp_dir().join("noxara-cp-test-libs2").to_string_lossy().to_string(),
+            client_jar: std::env::temp_dir().join("noxara-cp-test-client2.jar").to_string_lossy().to_string(),
+            assets_dir: std::env::temp_dir().join("noxara-cp-test-assets2").to_string_lossy().to_string(),
+            natives_dir: std::env::temp_dir().join("noxara-cp-test-natives2").to_string_lossy().to_string(),
+            java_path: "java".to_string(),
+            min_ram_mb: 512,
+            max_ram_mb: 1024,
+            width: None,
+            height: None,
+            extra_jvm_args: vec![],
+            extra_game_args: vec![],
+        };
+        let client_jar = std::env::temp_dir().join("noxara-cp-test-client2.jar");
+        std::fs::write(&client_jar, b"fake client jar").unwrap();
+        let account = LaunchAccount {
+            username: "Player".to_string(),
+            uuid: "00000000-0000-0000-0000-000000000000".to_string(),
+            access_token: "token".to_string(),
+            user_type: "msa".to_string(),
+        };
+
+        let args = build_launch_args(&detail, &instance, &account).unwrap();
+
+        assert_eq!(args.iter().filter(|a| a.as_str() == "-cp").count(), 1);
+        // Vanilla already declares the auth flags; ensure_standard_game_args must
+        // not duplicate them.
+        assert_eq!(args.iter().filter(|a| a.as_str() == "--accessToken").count(), 1);
+        assert_eq!(args.iter().filter(|a| a.as_str() == "--username").count(), 1);
     }
 }

@@ -1,6 +1,6 @@
 # Noxara Launcher
 
-A minimalist, monochrome Minecraft launcher by Noxara Labs. Electron + React + TypeScript +
+A minimalist, monochrome Minecraft launcher by Glocky Yuzei. Electron + React + TypeScript +
 Tailwind renderer, talking over a secure typed IPC bridge to a privileged Electron main
 process, which drives a Rust native core (`noxara-core`) for all Minecraft-specific work
 (version resolution, Java detection/installation, downloading, and launching).
@@ -11,6 +11,7 @@ Everything below is real — there are no mockups or fake "coming soon" placehol
 working flows.
 
 **Instances**
+
 - Create instances for **Vanilla, Fabric, Forge, NeoForge, and Quilt** with isolated
   directories (mods, configs, saves, screenshots live per-instance); all loader builds
   come from the live registries (with a Retry on version-load failures)
@@ -29,6 +30,7 @@ working flows.
   Crashed) everywhere it appears
 
 **Content**
+
 - **Mods**: search & install from Modrinth with version/dependency resolution, update
   checks, and uninstall
 - **Modpacks**: import/export Modrinth `.mrpack` archives; downloading a pack from the
@@ -37,6 +39,7 @@ working flows.
 - Per-mod dependency resolution (required/optional/incompatible)
 
 **Accounts**
+
 - **Microsoft**: full OAuth 2.0 **device-code** flow → Xbox Live → XSTS → Minecraft
   Services, with refresh-token rotation persisted in the OS credential store. No
   password ever touches the app
@@ -44,6 +47,7 @@ working flows.
 - Account avatars embedded from the real skin; profile refresh
 
 **Skins**
+
 - Local skin library (64×64 and legacy 64×32 PNG uploads, classic/slim model detection,
   rename/delete)
 - **3D skin viewer** on every account: drag to rotate, scroll to zoom, classic/slim body
@@ -54,6 +58,7 @@ working flows.
 - Offline accounts carry their selected skin into the instance on every launch
 
 **Java**
+
 - Automatic detection across PATH, common install locations, and managed directories
 - **Automatic Java installation**: if no compatible Java exists, Noxara downloads
   Mojang's own bundled official runtime (sha1-verified) on first launch — no manual
@@ -61,10 +66,12 @@ working flows.
 - Custom per-instance or default Java path, verified by probing the binary
 
 **Multiplayer**
+
 - Server list with icons, favorites, per-instance scoping, and live Minecraft
   Server List Ping (latency, version, player count, MOTD, favicon)
 
 **General**
+
 - Global **Downloads/Activity manager**: real progress, cancel/retry, clearable history —
   launches, loader installs, repairs, and Java runtime downloads are also cancellable
 - First-class settings: game directory, memory per instance, window size, close-on-
