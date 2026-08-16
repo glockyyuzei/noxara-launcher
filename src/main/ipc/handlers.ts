@@ -237,6 +237,12 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
     )
   );
   ipcMain.handle(
+    IPC_CHANNELS.installModpackNewInstance,
+    safe((_e, versionId: string, input: ModpackImportInput) =>
+      contentService.installModpackNewInstance(versionId, input)
+    )
+  );
+  ipcMain.handle(
     IPC_CHANNELS.pickModpackSavePath,
     safe(async (_e, defaultFileName: string): Promise<string | null> => {
       const win = getWindow();

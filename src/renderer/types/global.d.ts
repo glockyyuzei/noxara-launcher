@@ -98,6 +98,7 @@ declare global {
       checkContentUpdates(instanceId: string, category: ContentCategory): Promise<ModpackUpdateInfo[]>;
       pickModpackFile(): Promise<string | null>;
       importModpackFromFile(mrpackPath: string, input: ModpackImportInput): Promise<InstanceRecord>;
+      installModpackNewInstance(versionId: string, input: ModpackImportInput): Promise<InstanceRecord>;
       pickModpackSavePath(defaultFileName: string): Promise<string | null>;
       exportModpack(instanceId: string, destPath: string): Promise<{ exported: boolean }>;
       listDownloadTasks(): Promise<DownloadTaskInfo[]>;

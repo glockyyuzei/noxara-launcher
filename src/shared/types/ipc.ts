@@ -781,6 +781,8 @@ export interface NoxaraApi {
   // Modpacks (import/export .mrpack files)
   pickModpackFile(): Promise<string | null>;
   importModpackFromFile(mrpackPath: string, input: ModpackImportInput): Promise<InstanceRecord>;
+  /** Installs a Modrinth modpack into a brand-new instance created just for it. */
+  installModpackNewInstance(versionId: string, input: ModpackImportInput): Promise<InstanceRecord>;
   pickModpackSavePath(defaultFileName: string): Promise<string | null>;
   exportModpack(instanceId: string, destPath: string): Promise<{ exported: boolean }>;
 
@@ -880,6 +882,7 @@ export const IPC_CHANNELS = {
   checkContentUpdates: "noxara:content:checkContentUpdates",
   pickModpackFile: "noxara:modpacks:pickFile",
   importModpackFromFile: "noxara:modpacks:import",
+  installModpackNewInstance: "noxara:modpacks:installNewInstance",
   pickModpackSavePath: "noxara:modpacks:pickSavePath",
   exportModpack: "noxara:modpacks:export",
   listDownloadTasks: "noxara:downloads:listTasks",

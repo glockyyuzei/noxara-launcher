@@ -294,6 +294,8 @@ export default function ModsPage() {
           mod={installTarget}
           moddableInstances={moddableInstances}
           installingKeys={installingKeys}
+          browseLoader={loader}
+          browseGameVersion={gameVersion}
           onInstall={handleInstall}
           onClose={() => setInstallTarget(null)}
         />

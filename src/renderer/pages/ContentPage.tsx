@@ -5,6 +5,7 @@ import type {
   ContentCategory,
   InstanceRecord,
   ModLoader,
+  ModpackImportInput,
   ModSearchSort,
   ModrinthSearchHit,
   ModpackUpdateInfo,
@@ -168,6 +169,15 @@ export default function ContentPage({
     } catch (e) {
       toast.error("Couldn't open modpack", e instanceof Error ? e.message : undefined);
     }
+  }
+
+  /** Modpack install into a brand-new dedicated instance (created from the chosen
+   * version's Minecraft version + loader). */
+  async function handleInstallNewInstance(versionId: string, input: ModpackImportInput) {
+    const instance = await window.noxara.installModpackNewInstance(versionId, input);
+    toast.success("Modpack installed", `${instance.name} was created and the pack installed`);
+    setInstallTarget(null);
+    navigate(`/instances/${instance.id}`);
   }
 
   async function handlePackUpdate(contentId: string, name: string, versionId: string) {
@@ -459,6 +469,9 @@ export default function ContentPage({
           installingKeys={installingKeys}
           initialInstance={selectedInstance ?? undefined}
           category={category}
+          browseLoader={loader}
+          browseGameVersion={gameVersion}
+          onInstallNewInstance={category === "modpack" ? handleInstallNewInstance : undefined}
           onInstall={handleInstall}
           onClose={() => setInstallTarget(null)}
         />

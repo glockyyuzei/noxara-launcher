@@ -138,6 +138,20 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
   }
+
+  /* Loading spinners and indeterminate progress bars are functional indicators,
+     not decoration — a frozen spinner reads as a hung app. Keep them animating
+     even when Windows/OS "show animations" is turned off. */
+  .animate-spin {
+    animation-duration: 1s !important;
+    animation-iteration-count: infinite !important;
+    animation-timing-function: linear !important;
+  }
+  .animate-shimmer {
+    animation-duration: 1.6s !important;
+    animation-iteration-count: infinite !important;
+    animation-timing-function: ease-in-out !important;
+  }
 }
 
 /* Settings → Appearance → Compact mode (applied as a class on <html>). Tighter

@@ -191,7 +191,7 @@ export default function AccountsPage() {
                 value={offlineUsername}
                 onChange={(e) => setOfflineUsername(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleCreateOffline()}
-                placeholder="Glocky"
+                placeholder="Username"
                 autoFocus
                 className="yz-input w-full mb-2"
               />

@@ -4,6 +4,7 @@ dist-fresh/
 dist-electron/
 release/
 native/rust/target/
+AUDIT.md
 
 *.db
 *.db-journal

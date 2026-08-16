@@ -1,6 +1,6 @@
 {
     "name": "noxara-launcher",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "Noxara Launcher - a minimalist, monochrome Minecraft launcher by Glocky Yuzei.",
     "author": "Glocky Yuzei",
     "license": "MIT",
@@ -70,7 +70,9 @@
         "appId": "dev.noxara.launcher",
         "productName": "Noxara Launcher",
         "files": [
-            "dist/**/*",
+            "dist/main/**/*",
+            "dist/renderer/**/*",
+            "dist/shared/**/*",
             "assets/**/*",
             "database/**/*"
         ],
@@ -84,10 +86,37 @@
                 ]
             }
         ],
+        "publish": [
+            {
+                "provider": "github",
+                "owner": "glockyyuzei",
+                "repo": "noxara-launcher"
+            }
+        ],
         "win": {
-            "target": "nsis",
+            "target": [
+                "nsis-web",
+                "nsis"
+            ],
             "icon": "assets/icons/icon.ico",
             "signAndEditExecutable": false
+        },
+        "nsisWeb": {
+            "differentialPackage": true,
+            "oneClick": false,
+            "runAfterFinish": true,
+            "createDesktopShortcut": false,
+            "allowToChangeInstallationDirectory": true,
+            "shortcutName": "Noxara Launcher",
+            "include": "build/installer.nsh"
+        },
+        "nsis": {
+            "oneClick": false,
+            "runAfterFinish": true,
+            "createDesktopShortcut": false,
+            "allowToChangeInstallationDirectory": true,
+            "shortcutName": "Noxara Launcher",
+            "include": "build/installer.nsh"
         },
         "mac": {
             "target": "dmg",

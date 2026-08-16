@@ -15,6 +15,10 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 
+// Windows taskbar/desktop grouping key. Must match appId so the pinned icon and
+// the taskbar show the Noxara logo instead of Electron's default.
+app.setAppUserModelId("dev.noxara.launcher");
+
 // With Settings → "Close on launch" the launcher window closes as soon as the game
 // starts, but the app process (and the noxara-core sidecar that supervises the game)
 // must stay alive — quitting would tear the running Minecraft session down with it.

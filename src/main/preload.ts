@@ -106,6 +106,8 @@ const api = {
   pickModpackFile: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.pickModpackFile),
   importModpackFromFile: (mrpackPath: string, input: ModpackImportInput) =>
     ipcRenderer.invoke(IPC_CHANNELS.importModpackFromFile, mrpackPath, input),
+  installModpackNewInstance: (versionId: string, input: ModpackImportInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.installModpackNewInstance, versionId, input),
   pickModpackSavePath: (defaultFileName: string): Promise<string | null> =>
     ipcRenderer.invoke(IPC_CHANNELS.pickModpackSavePath, defaultFileName),
   exportModpack: (instanceId: string, destPath: string) =>

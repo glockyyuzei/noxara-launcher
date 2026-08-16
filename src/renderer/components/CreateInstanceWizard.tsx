@@ -122,7 +122,7 @@ export function CreateInstanceWizard({
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Eclipse Cobbleverse"
+                placeholder="Instance Name"
                 className="yz-input w-full"
               />
             </div>

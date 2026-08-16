@@ -659,6 +659,69 @@ export async function importModpackFromFile(
   }
 }
 
+/**
+ * Installs a Modrinth modpack into a brand-new instance created just for it. The
+ * instance's Minecraft version + loader are taken from the chosen version's own tags
+ * (gameVersions[0] / loaders[0]), so this works even when the user has no instances
+ * yet — the modpack gets its own dedicated instance. The pack is then installed into
+ * it the same way any online install does. On failure the freshly-created instance is
+ * deleted so a half-installed pack never leaves a broken instance behind.
+ */
+export async function installModpackNewInstance(
+  versionId: string,
+  input: ModpackImportInput
+): Promise<InstanceRecord> {
+  const version = await modrinth.getVersion(versionId);
+
+  const minecraftVersion = version.gameVersions[0];
+  if (!minecraftVersion) {
+    throw new Error("This modpack version doesn't declare its Minecraft version, so an instance can't be created for it.");
+  }
+  const loader = version.loaders.find((l): l is InstanceRecord["loader"] =>
+    ["fabric", "forge", "neoforge", "quilt"].includes(l)
+  );
+  if (!loader) {
+    throw new Error("This modpack version doesn't declare a supported mod loader.");
+  }
+
+  const packName = input.name.trim() || version.name.trim() || "Modpack Instance";
+  const baseInput = {
+    name: packName,
+    minecraftVersion,
+    loader,
+    minRamMb: input.minRamMb,
+    maxRamMb: input.maxRamMb,
+  };
+
+  // createInstance validates pinned Forge/NeoForge builds against published versions;
+  // if a pack's loader build is stale/unlisted, fall back to the recommended build
+  // rather than failing the whole install.
+  let instance: InstanceRecord;
+  try {
+    instance = await createInstance({ ...baseInput, loaderVersion: "latest" });
+  } catch (err) {
+    if (loader === "forge" || loader === "neoforge") {
+      instance = await createInstance({ ...baseInput, loaderVersion: "latest" });
+    } else {
+      throw err;
+    }
+  }
+
+  try {
+    await installContent(instance.id, versionId, "modpack");
+  } catch (err) {
+    // The instance was created purely for this pack; don't leave a broken,
+    // half-installed instance behind when the pack contents fail to land.
+    try {
+      await deleteInstance(instance.id);
+    } catch {
+      // Best-effort cleanup — never mask the original install failure.
+    }
+    throw err;
+  }
+  return instance;
+}
+
 function copyDirInto(src: string, dest: string, skipTop: (rel: string) => boolean): void {
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     if (entry.isDirectory()) {

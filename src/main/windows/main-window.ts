@@ -40,6 +40,7 @@ export function createMainWindow(): BrowserWindow {
     minHeight: 600,
     frame: false, // custom titlebar — spec section 4
     backgroundColor: "#0a0a0a",
+    icon: path.join(__dirname, "../../assets/icons/icon.ico"),
     show: false,
     webPreferences: {
       preload: path.join(__dirname, "../preload.js"),
