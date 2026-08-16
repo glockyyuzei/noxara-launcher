@@ -38,6 +38,7 @@ import {
 import { checkInstanceHealth, repairInstance } from "../services/health";
 import { getModDependencies } from "../services/mods";
 import { applyStartOnBoot, applyTrayPreference } from "../app-settings";
+import { logger } from "../services/logger";
 import type {
   ContentCategory,
   LauncherSettings,
@@ -55,7 +56,7 @@ function safe<T extends unknown[], R>(fn: (...args: T) => Promise<R> | R) {
     try {
       return await fn(...args);
     } catch (err) {
-      console.error("[ipc]", err);
+      logger.error("[ipc] handler error", { error: err instanceof Error ? err.message : String(err) });
       throw new Error(err instanceof Error ? err.message : "An unexpected error occurred.");
     }
   };
@@ -381,7 +382,17 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   coreBridge.on("download.complete", forward(IPC_CHANNELS.eventDownloadComplete));
   coreBridge.on("game.started", forward(IPC_CHANNELS.eventGameStarted));
   coreBridge.on("game.output", forward(IPC_CHANNELS.eventGameOutput));
-  coreBridge.on("game.exit", forward(IPC_CHANNELS.eventGameExit));
+  // A user-requested stop (launchService.killInstance) makes the core report the
+  // process as exited non-zero -> `crashed: true`. Normalize that to a normal exit so
+  // the renderer never shows a crash banner for a stop the user initiated. Only a
+  // genuinely crashed/launch-failed instance should surface as crashed.
+  coreBridge.on("game.exit", (p: { instanceId: string; code: number | null; crashed: boolean }) => {
+    const userStopped = launchService.takeUserStopped(p.instanceId);
+    getWindow()?.webContents.send(IPC_CHANNELS.eventGameExit, {
+      ...p,
+      crashed: userStopped ? false : p.crashed,
+    });
+  });
   coreBridge.on("forge.install.progress", forward(IPC_CHANNELS.eventForgeInstallProgress));
 
   // Global activity events -> renderer overlay.

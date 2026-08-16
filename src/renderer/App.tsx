@@ -62,8 +62,12 @@ export default function App() {
       markRunning(p.instanceId, true);
     });
     const offExit = window.noxara.onGameExit((p) => {
+      // Read the stop flag BEFORE markRunning clears it: an exit following a user-
+      // initiated Stop is a normal shutdown, not a crash (the core reports any killed
+      // process as exited non-zero, which would otherwise look like a crash).
+      const userStopped = useLaunchStore.getState().stoppingInstanceIds.has(p.instanceId);
       markRunning(p.instanceId, false);
-      if (p.crashed) {
+      if (p.crashed && !userStopped) {
         // Diagnose from the real log tail + exit code, then let the UI surface the
         // CrashInfo (banner with VIEW LOG / COPY ERROR / RESTART / REPAIR) wherever
         // the instance is shown. Clear is handled by launchInstance() on retry.

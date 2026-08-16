@@ -22,16 +22,54 @@ import { installForge } from "./forge";
 import { installNeoForge } from "./neoforge";
 import { listInstances } from "./instances";
 import { startActivity, updateActivity, progressActivity, succeedActivity, failActivity } from "./activity";
+import { logger } from "./logger";
 
 /** Maps an instance id to the activity that represents its launch, so game.started
  * can flip it to Completed exactly when the JVM actually comes up. */
 const launchActivityByInstance = new Map<string, string>();
+
+/** Instance ids the user explicitly stopped via killInstance. A killed process exits
+ * non-zero, which the core reports as `crashed: true` — but an intentional stop is not
+ * a crash. The set is consumed when the corresponding game.exit is forwarded so the
+ * renderer never shows a false crash banner/toast for a stop the user requested. */
+const userStoppedInstances = new Set<string>();
+
+/** Records that the user asked to stop this instance (called by killInstance). */
+export function markUserStopped(instanceId: string): void {
+  userStoppedInstances.add(instanceId);
+}
+
+/** True if `instanceId` was intentionally stopped (does not consume the marker —
+ * the renderer forwarder in handlers.ts consumes it via takeUserStopped). */
+export function isUserStopped(instanceId: string): boolean {
+  return userStoppedInstances.has(instanceId);
+}
+
+/** True if `instanceId` was intentionally stopped and the marker hasn't been consumed. */
+export function takeUserStopped(instanceId: string): boolean {
+  return userStoppedInstances.delete(instanceId);
+}
 
 coreBridge.on("game.started", (p: { instanceId: string }) => {
   const activityId = launchActivityByInstance.get(p.instanceId);
   if (activityId) {
     succeedActivity(activityId, { description: "Game started" });
     launchActivityByInstance.delete(p.instanceId);
+  }
+});
+
+// Safety net: if a JVM exits without ever reporting game.started (spawn failure,
+// instant crash, user kill before boot), the launch activity must still be finalized.
+// Without this, an orphaned "launching" activity would keep the instance looking busy
+// forever even though the process is gone.
+coreBridge.on("game.exit", (p: { instanceId: string; code: number | null; crashed: boolean }) => {
+  const activityId = launchActivityByInstance.get(p.instanceId);
+  if (!activityId) return;
+  launchActivityByInstance.delete(p.instanceId);
+  if (p.crashed && !isUserStopped(p.instanceId)) {
+    failActivity(activityId, "Minecraft closed before it finished starting.");
+  } else {
+    succeedActivity(activityId, { description: "Game exited" });
   }
 });
 
@@ -238,13 +276,19 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     if (activeAccount?.kind === "offline") {
       const carried = carrySkinIntoInstance(activeAccount.id, instance.instance_dir);
       if (carried.ok) {
-        console.log(`[launch] carried offline skin into ${carried.pngPath}`);
+        logger.debug("[launch] carried offline skin", { pngPath: carried.pngPath });
       } else if (carried.reason) {
-        console.log(`[launch] offline skin not carried: ${carried.reason}`);
+        logger.debug("[launch] offline skin not carried", { reason: carried.reason });
       }
     }
 
     const settings = getSettings();
+    // Set the "launching" state BEFORE handing off to the core. Doing it after the
+    // await races with game.started (which completes the activity) — if the response
+    // and the started event arrive in the same stdout chunk, the activity could be
+    // completed first and this later call would (pre-guard) resurrect it into a stuck
+    // "launching" state even after the game closed.
+    progressActivity(activityId, {}, "launching", { description: "Launching Minecraft" });
     const result = await coreBridge.call<{ started: boolean }>("launch.start", {
       instance: {
         instance_id: instance.id,
@@ -272,7 +316,6 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
       },
       versionDetail,
     });
-    progressActivity(activityId, {}, "launching", { description: "Launching Minecraft" });
     return result;
   } catch (err) {
     if (!isCancelledError(err)) {
@@ -309,6 +352,9 @@ export async function killInstance(instanceId: string): Promise<void> {
   });
   try {
     await coreBridge.call("launch.stop", { instanceId });
+    // Record the intent BEFORE the game.exit event lands so the forwarder can mark
+    // this exit as non-crash even though the killed process returns a non-zero code.
+    markUserStopped(instanceId);
     succeedActivity(activityId, { description: "Instance stopped" });
   } catch (err) {
     failActivity(activityId, err instanceof Error ? err.message : "Failed to stop instance");

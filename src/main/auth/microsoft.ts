@@ -13,8 +13,12 @@
  */
 
 import { fetchWithTimeout } from "../services/http";
+import { MSA_CLIENT_ID } from "../../shared/constants/msa";
 
-const CLIENT_ID = process.env.NOXARA_MSA_CLIENT_ID ?? "";
+// The app ships with its public client ID baked in (see shared/constants/msa.ts), so
+// sign-in works out of the box in packaged builds. The env var is kept purely as an
+// override for development / alternate registrations.
+const CLIENT_ID = process.env.NOXARA_MSA_CLIENT_ID ?? MSA_CLIENT_ID;
 const DEVICE_CODE_URL =
   "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode";
 const TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token";

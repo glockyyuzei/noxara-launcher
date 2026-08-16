@@ -12,6 +12,7 @@
  *     instead of hammering Fabric's API
  */
 import { coreBridge, type CoreBridgeError } from "./core-bridge";
+import { logger } from "./logger";
 
 export interface FabricLoaderVersion {
   version: string;
@@ -65,7 +66,7 @@ async function callWithRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> 
     } catch (err) {
       lastError = err;
       if (attempt >= attempts || !isTransientError(err)) break;
-      console.warn(`[fabric] transient failure on attempt ${attempt}/${attempts}: ${(err as Error).message}`);
+      logger.warn("[fabric] transient failure", { attempt, attempts, error: (err as Error).message });
       await new Promise((r) => setTimeout(r, 400 * attempt));
     }
   }

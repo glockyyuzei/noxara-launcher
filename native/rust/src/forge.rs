@@ -38,6 +38,7 @@ pub struct ForgeVersion {
 }
 
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ForgeInstallProgressEvent {
     pub task_id: String,
     pub stage: String,
@@ -605,4 +606,25 @@ pub async fn install(
 
     emit_progress(task_id, "complete", format!("{loader_name} installed"));
     Ok(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Electron main process reads forge.install.progress as camelCase
+    /// (taskId, stage, message). Regression guard against snake_case keys.
+    #[test]
+    fn forge_progress_event_serializes_camel_case_keys() {
+        let evt = ForgeInstallProgressEvent {
+            task_id: "task-9".to_string(),
+            stage: "libraries".to_string(),
+            message: "Downloading libraries".to_string(),
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        assert!(json.contains("\"taskId\""), "got: {json}");
+        assert!(json.contains("\"stage\""), "got: {json}");
+        assert!(json.contains("\"message\""), "got: {json}");
+        assert!(!json.contains("task_id"), "got: {json}");
+    }
 }

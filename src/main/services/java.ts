@@ -55,7 +55,10 @@ export async function ensureJavaRuntime(
   const result = await coreBridge.call<RuntimeInstallResult>(
     "java.ensureRuntime",
     { component, majorVersion, destDir: javaDir(), taskId },
-    10 * 60 * 1000 // a JRE archive can be ~100MB on a slow connection
+    // A full JRE is hundreds of files (~100MB+); on a slow connection 10 minutes is
+    // not enough. Match the shared download batch budget so a legitimately-slow
+    // install isn't killed mid-flight while the core keeps working in the background.
+    30 * 60 * 1000
   );
   return result.path;
 }
@@ -78,9 +81,19 @@ export async function installJavaRuntime(majorVersion: number): Promise<JavaInst
   updateActivity(activityId, { cancellable: true });
   try {
     const path = await ensureJavaRuntime("", majorVersion, activityId);
-    const install = await testJavaPath(path);
+    // Probe the freshly-installed JVM. Retry once in case the very first invocation is
+    // slow (Defender scan / JIT warmup) but the runtime is actually fine.
+    let install = await testJavaPath(path);
     if (!install) {
-      throw new Error("Java runtime was installed but could not be verified.");
+      await new Promise((r) => setTimeout(r, 1500));
+      install = await testJavaPath(path);
+    }
+    if (!install) {
+      throw new Error(
+        `Java ${majorVersion} was downloaded but could not be verified. ` +
+          `The installed runtime at ${path} did not respond to a version check. ` +
+          "Try installing it again, or pick a different Java installation in the Java manager."
+      );
     }
     succeedActivity(activityId, {
       description: `Installed Java ${install.majorVersion} (${install.version})`,

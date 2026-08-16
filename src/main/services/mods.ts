@@ -21,6 +21,7 @@ import { assertWithin } from "../filesystem/paths";
 import { registerDownload, unregisterDownload, signalFor } from "./download-control";
 import { startActivity, progressActivity, succeedActivity, failActivity, isActivityActive } from "./activity";
 import { fetchWithTimeout } from "./http";
+import { createProgressCoalescer } from "./coalesce";
 import * as modrinth from "./modrinth";
 import type {
   InstalledMod,
@@ -109,6 +110,25 @@ async function downloadWithProgress(
   const reader = res.body.getReader();
   const tmpPath = `${destPath}.part`;
   const fileHandle = fs.createWriteStream(tmpPath);
+  // Coalesce per-chunk progress so a fast stream can't flood the IPC channel and
+  // renderer (keeps the activity overlay smooth at ~13 updates/sec).
+  const progress = createProgressCoalescer((bytesDownloaded, latestTotal) => {
+    modDownloadEvents.emit("progress", {
+      taskId,
+      modName,
+      instanceId,
+      bytesDownloaded,
+      totalBytes: latestTotal,
+    });
+    // Feed real byte deltas into the global activity manager (the activity owns
+    // the same taskId as this download, whether it's a standalone mod install or
+    // a repair/launch batch), so the overlay shows actual bytes + rate + ETA.
+    progressActivity(taskId, {
+      currentBytes: bytesDownloaded,
+      totalBytes: latestTotal,
+      progress: latestTotal > 0 ? Math.min(1, bytesDownloaded / latestTotal) : undefined,
+    });
+  });
 
   let bytesDownloaded = 0;
   try {
@@ -120,23 +140,10 @@ async function downloadWithProgress(
           fileHandle.write(Buffer.from(value), (err) => (err ? reject(err) : resolve()));
         });
         bytesDownloaded += value.byteLength;
-        modDownloadEvents.emit("progress", {
-          taskId,
-          modName,
-          instanceId,
-          bytesDownloaded,
-          totalBytes,
-        });
-        // Feed real byte deltas into the global activity manager (the activity owns
-        // the same taskId as this download, whether it's a standalone mod install or
-        // a repair/launch batch), so the overlay shows actual bytes + rate + ETA.
-        progressActivity(taskId, {
-          currentBytes: bytesDownloaded,
-          totalBytes,
-          progress: totalBytes > 0 ? Math.min(1, bytesDownloaded / totalBytes) : undefined,
-        });
+        progress.push(bytesDownloaded, totalBytes);
       }
     }
+    progress.flush();
     await new Promise<void>((resolve, reject) =>
       fileHandle.close((err) => (err ? reject(err) : resolve()))
     );

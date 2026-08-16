@@ -12,10 +12,16 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, SystemTime};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::downloads::DownloadTask;
+
+/// Cap on how long a `java -version` probe may take before we give up and treat the
+/// binary as broken. A freshly-installed runtime can be slow on first launch (Windows
+/// Defender/SmartScreen scanning, JIT warmup, AV), but an indefinite hang would block
+/// the detect/verify call forever.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Mojang's Java runtime product manifest — the exact endpoint the official launcher
 /// uses to know which JREs exist per platform. The path hash is stable/published.
@@ -121,8 +127,12 @@ async fn fetch_json(client: &reqwest::Client, url: &str, cache_key: &str, ttl: D
     Ok(value)
 }
 
-/// Result of a Java runtime installation attempt.
+/// Result of a Java runtime installation attempt. Serialized camelCase to match the
+/// declared Electron type (RuntimeInstallResult in src/main/services/java.ts) — the
+/// RPC response crosses the same JSON line protocol as events, so the same snake_case
+/// pitfall applies here.
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeInstallResult {
     pub path: String,
     pub component: String,
@@ -298,8 +308,19 @@ pub async fn ensure_runtime(
     }
 
     // Reuses the batch downloader: skips already-valid files, streams progress events to
-    // the caller's activity/task id, and bounds concurrency.
-    let failed = crate::downloads::download_batch(client, task_id, tasks, 8, 3, None).await?;
+    // the caller's activity/task id, and bounds concurrency. An explicit per-request
+    // timeout keeps one stalled CDN connection from holding the whole runtime install
+    // hostage (the shared client default already applies, but being explicit here
+    // guards against future client-level changes).
+    let failed = crate::downloads::download_batch(
+        client,
+        task_id,
+        tasks,
+        8,
+        3,
+        Some(std::time::Duration::from_secs(120)),
+    )
+    .await?;
     if !failed.is_empty() {
         bail!(
             "failed to download {} of {} Java {major_version} runtime files",
@@ -456,14 +477,54 @@ fn scan_dir_for_java(dir: &Path, out: &mut HashSet<PathBuf>) {
 }
 
 /// Runs `java -version` and parses vendor/version/bitness from stderr, since the JVM
-/// prints its version banner to stderr by convention.
+/// prints its version banner to stderr by convention. Bounded by PROBE_TIMEOUT so a
+/// hung JVM (corrupt binary, blocked first-run scan) can never stall the caller.
 pub fn probe_java_binary(path: &Path) -> Option<JavaInstallation> {
-    let output = Command::new(path).arg("-version").output().ok()?;
-    let banner = String::from_utf8_lossy(&output.stderr);
-    let banner = if banner.trim().is_empty() {
-        String::from_utf8_lossy(&output.stdout).to_string()
+    let mut child = Command::new(path)
+        .arg("-version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    // Take the handles up front: after try_wait reaps the process (Unix) the pipe
+    // buffers still hold the banner, but a later wait()/wait_with_output() would fail
+    // with ECHILD. Reading the taken handles directly works on every platform.
+    let mut stdout = child.stdout.take()?;
+    let mut stderr = child.stderr.take()?;
+
+    // Wait up to PROBE_TIMEOUT for the JVM to print its banner. try_wait lets us check
+    // without blocking indefinitely; if the deadline passes we kill it and bail.
+    let deadline = Instant::now() + PROBE_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        // java -version exits non-zero on a broken/incompatible runtime — don't probe
+        // further, the binary is not usable.
+        let _ = child.wait();
+        return None;
+    }
+
+    use std::io::Read;
+    let mut err_buf = String::new();
+    let mut out_buf = String::new();
+    let _ = stderr.read_to_string(&mut err_buf);
+    let _ = stdout.read_to_string(&mut out_buf);
+    let banner = if err_buf.trim().is_empty() {
+        out_buf
     } else {
-        banner.to_string()
+        err_buf
     };
 
     let version = extract_quoted_version(&banner)?;

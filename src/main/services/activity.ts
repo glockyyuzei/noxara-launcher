@@ -46,6 +46,14 @@ interface InternalActivity extends ActivityRecord {
 const ACTIVE_CAP = 40;
 const RECENT_CAP = 25;
 
+/** Statuses that end an activity's lifecycle. Once an activity is in one of these,
+ * it must never regress back to an active state — the UI derives live state from the
+ * registry and a resurrected "downloading"/"launching" record would leave an instance
+ * stuck looking busy after it actually finished (e.g. a stale progressActivity firing
+ * after succeedActivity for the same activity id). Only startActivity() may reset a
+ * terminal record, and only deliberately (a retry). */
+const TERMINAL_STATUSES = new Set<ActivityStatus>(["completed", "failed", "cancelled"]);
+
 const registry = new Map<string, InternalActivity>();
 const activeIds: string[] = [];
 const recentIds: string[] = [];
@@ -134,15 +142,20 @@ function updater(id: string) {
   return (patch: Partial<ActivityRecord>) => updateActivity(id, patch);
 }
 
-/** Merges a partial update into an existing activity (no-op if it doesn't exist). */
+/** Merges a partial update into an existing activity (no-op if it doesn't exist).
+ * Terminal activities are immutable here: a completed/failed/cancelled record must
+ * not be nudged back to life by a straggler progress event or status transition. */
 export function updateActivity(id: string, patch: Partial<ActivityRecord>): void {
   const activity = registry.get(id);
   if (!activity) return;
+  if (TERMINAL_STATUSES.has(activity.status)) return;
   Object.assign(activity, patch, { updatedAt: Date.now() });
   emitUpdated(snapshot(activity), false);
 }
 
-/** Merges numeric progress + an optional status into an activity. */
+/** Merges numeric progress + an optional status into an activity. Like updateActivity,
+ * it refuses to touch a terminal record so a late progress event can never resurrect
+ * a finished activity (the root cause of instances showing "Launching" after close). */
 export function progressActivity(
   id: string,
   progress: ActivityProgress,
@@ -151,6 +164,7 @@ export function progressActivity(
 ): void {
   const activity = registry.get(id);
   if (!activity) return;
+  if (TERMINAL_STATUSES.has(activity.status)) return;
   const merged = {
     ...activity.progress,
     ...progress,

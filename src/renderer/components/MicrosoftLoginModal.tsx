@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import type { AccountRecord } from "@shared/types/ipc";
+import { friendlyErrorMessage } from "../lib/coreErrors";
 
 type Phase = "starting" | "waiting" | "finishing" | "error";
 
@@ -36,7 +37,7 @@ export function MicrosoftLoginModal({
         setPhase("finishing");
         onSuccess(account);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Microsoft sign-in failed");
+        setError(friendlyErrorMessage(e));
         setPhase("error");
       }
     })();

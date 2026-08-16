@@ -5,6 +5,7 @@ import { registerIpcHandlers } from "./ipc/handlers";
 import { coreBridge } from "./services/core-bridge";
 import { getDb, closeDb } from "./services/database";
 import { getSettings } from "./services/settings";
+import { logger } from "./services/logger";
 import {
   applyDebugLogLevel,
   applyStartOnBoot,
@@ -35,6 +36,11 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     getDb(); // run migrations before anything else touches the DB
+    logger.info("noxara-launcher starting", {
+      version: app.getVersion(),
+      packaged: app.isPackaged,
+      debugMode: getSettings().debugMode,
+    });
     applyDebugLogLevel(); // before coreBridge.start() so the core inherits the level
     coreBridge.start();
     registerIpcHandlers(() => mainWindow);

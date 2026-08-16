@@ -19,6 +19,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 
 use crate::protocol::write_event;
@@ -26,6 +27,14 @@ use crate::protocol::write_event;
 /// Marker error reported to the Electron side as RPC code "cancelled".
 #[derive(Debug, Clone, Copy)]
 pub struct DownloadCancelled;
+
+/// Minimum gap between two `download.progress` events for a given batch. Each file
+/// streams in ~64 KiB chunks, so on a fast connection a single large file would emit
+/// hundreds of progress events per second. Flooding stdout/IPC with them starves the
+/// renderer and makes the progress bar look frozen/janky. We coalesce to a sane
+/// ~10-20 events/sec per batch (shared across all concurrent files in it) and always
+/// force a final event when a file completes so terminal progress is never dropped.
+const PROGRESS_MIN_INTERVAL: Duration = Duration::from_millis(75);
 
 impl std::fmt::Display for DownloadCancelled {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -66,7 +75,14 @@ pub struct DownloadTask {
     pub label: String,
 }
 
+// Events are serialized with camelCase keys to match the Electron main process / renderer
+// contract (src/shared/types/ipc.ts). WITHOUT the rename, serde emits snake_case field
+// names ("task_id", "bytes_downloaded", ...) and every JS consumer — handlers.ts,
+// launch.ts, App.tsx — reads camelCase ("taskId", "bytesDownloaded", ...), silently
+// seeing `undefined` for every field. That was the root cause of "frozen" download
+// progress and launch activities that never transitioned out of "Launching".
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadProgressEvent {
     pub task_id: String,
     pub label: String,
@@ -77,6 +93,7 @@ pub struct DownloadProgressEvent {
 }
 
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadCompleteEvent {
     pub task_id: String,
     pub failed: Vec<String>,
@@ -120,6 +137,8 @@ pub async fn download_batch(
     // Per-file bytes already counted toward `downloaded_bytes`, so a retry can subtract
     // the previous attempt's contribution instead of double-counting it in the progress.
     let file_bytes: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Shared progress throttle clock for the whole batch (see PROGRESS_MIN_INTERVAL).
+    let last_emit: Arc<Mutex<Instant>> = Arc::new(Mutex::new(Instant::now()));
 
     // Cancelled before any work started? Report immediately.
     if is_cancelled(task_id) {
@@ -142,6 +161,7 @@ pub async fn download_batch(
         let downloaded_bytes = Arc::clone(&downloaded_bytes);
         let file_bytes = Arc::clone(&file_bytes);
         let failed = Arc::clone(&failed);
+        let last_emit = Arc::clone(&last_emit);
         let task_id = task_id.to_string();
 
         let handle = tokio::spawn(async move {
@@ -160,17 +180,7 @@ pub async fn download_batch(
                     if let Some(size) = task.size {
                         downloaded_bytes.fetch_add(size, Ordering::Relaxed);
                     }
-                    write_event(
-                        "download.progress",
-                        DownloadProgressEvent {
-                            task_id: task_id.clone(),
-                            label: task.label.clone(),
-                            bytes_downloaded: downloaded_bytes.load(Ordering::Relaxed),
-                            total_bytes,
-                            file_index: index + 1,
-                            file_count,
-                        },
-                    );
+                    emit_progress(&task_id, &task.label, &downloaded_bytes, total_bytes, index, file_count, &last_emit, true);
                     return;
                 }
             }
@@ -184,7 +194,7 @@ pub async fn download_batch(
                 if is_cancelled(&task_id) {
                     break;
                 }
-                match download_single(&client, &task, &downloaded_bytes, &file_bytes, total_bytes, &task_id, index, file_count, request_timeout).await {
+                match download_single(&client, &task, &downloaded_bytes, &file_bytes, total_bytes, &task_id, index, file_count, request_timeout, &last_emit).await {
                     Ok(()) => {
                         last_err = None;
                         break;
@@ -241,6 +251,7 @@ async fn download_single(
     index: usize,
     file_count: usize,
     request_timeout: Option<std::time::Duration>,
+    last_emit: &Arc<Mutex<Instant>>,
 ) -> Result<()> {
     if let Some(parent) = task.dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -257,7 +268,13 @@ async fn download_single(
     // Track this attempt's own transfer separately so it can be recorded/rolled back.
     let mut attempt_bytes: u64 = 0;
 
-    let tmp_path = task.dest.with_extension("part");
+    // Temp path is the FINAL path with a ".part" suffix APPENDED (never `with_extension`).
+    // `with_extension` replaces the last extension, so "bin/java.exe" and "bin/java.dll"
+    // would both map to "bin/java.part" — two concurrent downloads would then write to
+    // the SAME temp file and corrupt each other (the exact failure behind "failed to
+    // download 2 of 484 Java 21 runtime files" on Windows runtimes, which contain
+    // bin/java.exe + bin/java.dll, bin/jimage.exe + bin/jimage.dll, etc.).
+    let tmp_path = part_path_for(&task.dest);
     if is_cancelled(task_id) {
         let _ = tokio::fs::remove_file(&tmp_path).await;
         return Err(anyhow::Error::new(DownloadCancelled));
@@ -294,18 +311,10 @@ async fn download_single(
             let chunk = chunk?;
             file.write_all(&chunk).await?;
             attempt_bytes += chunk.len() as u64;
-            let now = downloaded_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed) + chunk.len() as u64;
-            write_event(
-                "download.progress",
-                DownloadProgressEvent {
-                    task_id: task_id.to_string(),
-                    label: task.label.clone(),
-                    bytes_downloaded: now,
-                    total_bytes,
-                    file_index: index + 1,
-                    file_count,
-                },
-            );
+            downloaded_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            // Throttled: only emit when the batch's last progress event is old enough
+            // (PROGRESS_MIN_INTERVAL), so a fast stream doesn't flood the IPC channel.
+            emit_progress(task_id, &task.label, downloaded_bytes, total_bytes, index, file_count, last_emit, false);
         }
         file.flush().await?;
         drop(file);
@@ -323,6 +332,10 @@ async fn download_single(
         }
 
         tokio::fs::rename(&tmp_path, &task.dest).await?;
+        // Force a final event so the renderer's per-file progress lands exactly on the
+        // completed file (a file that finished faster than PROGRESS_MIN_INTERVAL would
+        // otherwise never surface its final byte count).
+        emit_progress(task_id, &task.label, downloaded_bytes, total_bytes, index, file_count, last_emit, true);
         Ok(())
     })
     .await;
@@ -354,5 +367,105 @@ fn record_file_bytes(file_bytes: &Mutex<HashMap<String, u64>>, dest_key: &str, d
         if prior > 0 {
             downloaded_bytes.fetch_sub(prior, Ordering::Relaxed);
         }
+    }
+}
+
+/// Temp path for an in-flight download: the final path with ".part" appended. Must be
+/// a unique one-to-one mapping from the final path (never `with_extension`, which
+/// replaces the last extension and makes distinct files like "bin/java.exe" and
+/// "bin/java.dll" collide on the same temp path during concurrent batch downloads).
+fn part_path_for(dest: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.part", dest.to_string_lossy()))
+}
+
+/// Emits a `download.progress` event, coalesced to at most one per PROGRESS_MIN_INTERVAL
+/// per batch (shared clock across all concurrently-downloading files). `force` skips the
+/// throttle check so terminal per-file progress is always delivered. Reads the shared
+/// byte counter fresh so the renderer always sees aggregate progress for the batch.
+fn emit_progress(
+    task_id: &str,
+    label: &str,
+    downloaded_bytes: &AtomicU64,
+    total_bytes: u64,
+    index: usize,
+    file_count: usize,
+    last_emit: &Arc<Mutex<Instant>>,
+    force: bool,
+) {
+    let emit = {
+        let mut last = last_emit.lock().unwrap();
+        if force || last.elapsed() >= PROGRESS_MIN_INTERVAL {
+            *last = Instant::now();
+            true
+        } else {
+            false
+        }
+    };
+    if !emit {
+        return;
+    }
+    write_event(
+        "download.progress",
+        DownloadProgressEvent {
+            task_id: task_id.to_string(),
+            label: label.to_string(),
+            bytes_downloaded: downloaded_bytes.load(Ordering::Relaxed),
+            total_bytes,
+            file_index: index + 1,
+            file_count,
+        },
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn part_path_appends_suffix_and_never_collides() {
+        // bin/java.exe and bin/java.dll must map to DISTINCT temp paths. The old
+        // `with_extension("part")` mapped both to bin/java.part, corrupting two
+        // concurrent downloads (the "failed to download 2 of 484" bug).
+        let exe = part_path_for(Path::new("bin/java.exe"));
+        let dll = part_path_for(Path::new("bin/java.dll"));
+        assert_eq!(exe, PathBuf::from("bin/java.exe.part"));
+        assert_eq!(dll, PathBuf::from("bin/java.dll.part"));
+        assert_ne!(exe, dll);
+    }
+
+    #[test]
+    fn part_path_handles_no_extension_files() {
+        // Files with no extension (licenses, module blobs) must still get a temp path.
+        let license = part_path_for(Path::new("legal/LICENSE"));
+        assert_eq!(license, PathBuf::from("legal/LICENSE.part"));
+    }
+
+    #[test]
+    fn part_path_handles_windows_style_paths() {
+        let win = part_path_for(Path::new("C:\\runtime\\bin\\java.exe"));
+        assert_eq!(win, PathBuf::from("C:\\runtime\\bin\\java.exe.part"));
+    }
+
+    #[test]
+    fn progress_event_serializes_camel_case_keys() {
+        let evt = DownloadProgressEvent {
+            task_id: "task-1".to_string(),
+            label: "lib.jar".to_string(),
+            bytes_downloaded: 1234,
+            total_bytes: 9999,
+            file_index: 2,
+            file_count: 5,
+        };
+        let json = serde_json::to_string(&evt).unwrap();
+        // The Electron main process reads these keys as camelCase (taskId, bytesDownloaded,
+        // totalBytes, fileIndex, fileCount). If Rust emits snake_case keys the handlers
+        // would see undefined for every field and progress would never reach the UI.
+        assert!(json.contains("\"taskId\""), "got: {json}");
+        assert!(json.contains("\"bytesDownloaded\""), "got: {json}");
+        assert!(json.contains("\"totalBytes\""), "got: {json}");
+        assert!(json.contains("\"fileIndex\""), "got: {json}");
+        assert!(json.contains("\"fileCount\""), "got: {json}");
+        assert!(!json.contains("task_id"), "got: {json}");
+        assert!(!json.contains("bytes_downloaded"), "got: {json}");
     }
 }

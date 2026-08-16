@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import * as keytar from "keytar";
 import { getDb } from "./database";
+import { logger } from "./logger";
 import type { AccountRecord } from "../../shared/types/ipc";
 
 const KEYTAR_SERVICE = "NoxaraLauncher";
@@ -144,7 +145,7 @@ async function resolveAccountAvatar(mcAccessToken: string, uuid: string): Promis
     const { resolveAvatarDataUrl } = await import("./avatar");
     return await resolveAvatarDataUrl(mcAccessToken, uuid);
   } catch (err) {
-    console.warn("[accounts] avatar resolution failed:", err instanceof Error ? err.message : err);
+    logger.warn("[accounts] avatar resolution failed", { error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }

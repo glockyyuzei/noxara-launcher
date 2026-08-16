@@ -11,7 +11,11 @@ export interface FriendlyError {
 }
 
 export function friendlyCoreError(err: unknown): FriendlyError {
-  const message = err instanceof Error ? err.message : String(err);
+  let message = err instanceof Error ? err.message : String(err);
+  // Electron wraps IPC handler failures as "Error invoking remote method '<channel>':
+  // <inner message>". Strip the wrapper so the underlying reason is what we classify
+  // and show — never expose the raw "invoking remote method" boilerplate to the user.
+  message = message.replace(/^Error invoking remote method '[^']*':\s*/i, "").trim();
   const m = message.toLowerCase();
 
   if (m.includes("did not respond in time") || m.includes("timed out") || m.includes("timeout")) {
@@ -36,6 +40,16 @@ export function friendlyCoreError(err: unknown): FriendlyError {
   }
   if (m.includes("cancelled") || m.includes("cancel")) {
     return { title: "Cancelled", detail: "The operation was cancelled.", retryable: true };
+  }
+  if (m.includes("no xbox profile") || m.includes("child account")) {
+    return { title: "Microsoft account issue", detail: message, retryable: false };
+  }
+  if (m.includes("does not own minecraft")) {
+    return {
+      title: "Minecraft not owned",
+      detail: "This Microsoft account doesn't own Minecraft: Java Edition, so it can't be used to play.",
+      retryable: false,
+    };
   }
   if (m.includes("bad request") || m.includes("invalid") || m.includes("not found") || m.includes("unsupported")) {
     return { title: "The request couldn't be completed", detail: message, retryable: false };

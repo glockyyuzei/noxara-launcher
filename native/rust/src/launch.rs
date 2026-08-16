@@ -59,6 +59,7 @@ pub struct LaunchInstance {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameOutputEvent {
     pub instance_id: String,
     pub stream: String, // "stdout" | "stderr"
@@ -66,6 +67,7 @@ pub struct GameOutputEvent {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameExitEvent {
     pub instance_id: String,
     pub code: Option<i32>,
@@ -73,6 +75,7 @@ pub struct GameExitEvent {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GameStartedEvent {
     pub instance_id: String,
     pub pid: u32,
@@ -537,5 +540,47 @@ pub async fn stop_instance(instance_id: &str) -> bool {
             tracing::warn!("failed to kill instance {instance_id}: {e:#}");
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Electron main process / renderer read game events as camelCase
+    /// (instanceId, crashed, code, pid, stream, line). Regression guard against
+    /// re-introducing snake_case keys (which made launch activities stick in
+    /// "Launching" because game.started/game.exit payloads never matched).
+    #[test]
+    fn game_events_serialize_camel_case_keys() {
+        let started = GameStartedEvent {
+            instance_id: "inst-1".to_string(),
+            pid: 42,
+        };
+        let started_json = serde_json::to_string(&started).unwrap();
+        assert!(started_json.contains("\"instanceId\""), "got: {started_json}");
+        assert!(!started_json.contains("instance_id"), "got: {started_json}");
+
+        let exit = GameExitEvent {
+            instance_id: "inst-1".to_string(),
+            code: Some(1),
+            crashed: true,
+        };
+        let exit_json = serde_json::to_string(&exit).unwrap();
+        assert!(exit_json.contains("\"instanceId\""), "got: {exit_json}");
+        assert!(exit_json.contains("\"code\""), "got: {exit_json}");
+        assert!(exit_json.contains("\"crashed\""), "got: {exit_json}");
+        assert!(!exit_json.contains("instance_id"), "got: {exit_json}");
+
+        let output = GameOutputEvent {
+            instance_id: "inst-1".to_string(),
+            stream: "stdout".to_string(),
+            line: "hello".to_string(),
+        };
+        let output_json = serde_json::to_string(&output).unwrap();
+        assert!(output_json.contains("\"instanceId\""), "got: {output_json}");
+        assert!(output_json.contains("\"stream\""), "got: {output_json}");
+        assert!(output_json.contains("\"line\""), "got: {output_json}");
+        assert!(!output_json.contains("instance_id"), "got: {output_json}");
     }
 }

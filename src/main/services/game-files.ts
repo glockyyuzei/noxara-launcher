@@ -157,10 +157,27 @@ export async function ensureVersionAssetsAndLibraries(
 
   if (nativeJarPaths.length > 0) {
     const marker = path.join(nativesDir, ".noxara-natives-complete");
-    // Re-extract only when this instance's natives have never been fully extracted;
-    // avoids unzipping every native jar on every launch. Repair/launch recreating the
-    // natives dir naturally re-extracts.
-    if (!fs.existsSync(marker)) {
+    // Re-extract only when this instance's natives were never fully extracted OR the
+    // set of native jars changed since (e.g. the instance switched Minecraft versions,
+    // which ships different native libraries). The marker records the version + exact
+    // jar paths so an upgrade/downgrade triggers a fresh extraction; identical launches
+    // skip the unzip entirely.
+    const needsExtract = (() => {
+      if (!fs.existsSync(marker)) return true;
+      try {
+        const recorded = JSON.parse(fs.readFileSync(marker, "utf-8")) as {
+          version?: string;
+          jars?: string[];
+        };
+        if (recorded.version !== versionDetail.id) return true;
+        const recordedJars = recorded.jars ?? [];
+        if (recordedJars.length !== nativeJarPaths.length) return true;
+        return recordedJars.some((j, i) => j !== nativeJarPaths[i]);
+      } catch {
+        return true; // corrupt/legacy marker — re-extract to be safe
+      }
+    })();
+    if (needsExtract) {
       await coreBridge.call("natives.extract", {
         jarPaths: nativeJarPaths,
         destDir: nativesDir,

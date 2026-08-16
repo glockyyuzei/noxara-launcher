@@ -7,6 +7,7 @@ import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
 import { app } from "electron";
+import { logger } from "./logger";
 
 let db: Database.Database | null = null;
 
@@ -48,7 +49,7 @@ export function getDb(): Database.Database {
         // WAL/SHM files are optional; ignore if absent.
       }
     }
-    console.warn(`[database] corrupt database recovered; backed up to ${backupPath}`);
+    logger.warn("[database] corrupt database recovered", { backupPath });
     db = openAndMigrate(dbPath);
     return db;
   }
@@ -85,7 +86,7 @@ function openAndMigrate(dbPath: string): Database.Database {
         );
       });
       run();
-      console.log(`[database] applied migration ${file}`);
+      logger.info("[database] applied migration", { file });
     }
 
     return instance;

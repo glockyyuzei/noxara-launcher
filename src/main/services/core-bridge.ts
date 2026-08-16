@@ -11,6 +11,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { app } from "electron";
 import { EventEmitter } from "node:events";
+import { logger } from "./logger";
 
 /** An error surfaced from noxara-core (or a local bridge failure) with an optional
  * machine-readable `code` that callers match on to decide retry/classification
@@ -53,7 +54,11 @@ export class CoreBridge extends EventEmitter {
     const binPath = this.resolveBinaryPath();
     this.proc = spawn(binPath, [], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, NOXARA_LOG: "info" },
+      // Inherit the NOXARA_LOG level set by app-settings.applyDebugLogLevel() (which
+      // runs before coreBridge.start()). Hardcoding "info" here silently disabled the
+      // Settings → Debug logging toggle: the core only ever ran at info even when the
+      // user enabled verbose logging.
+      env: process.env,
     });
 
     this.proc.stdout.setEncoding("utf-8");
@@ -61,12 +66,16 @@ export class CoreBridge extends EventEmitter {
 
     this.proc.stderr.setEncoding("utf-8");
     this.proc.stderr.on("data", (chunk: string) => {
-      // Human-readable Rust logs only — never parsed, just surfaced for diagnostics.
-      console.log(`[noxara-core] ${chunk.trim()}`);
+      // Human-readable Rust logs only — never parsed, just surfaced for diagnostics
+      // through the structured logger (writes to <userData>/logs/main.log). The core's
+      // own EnvFilter (NOXARA_LOG) gates verbosity, so whatever reaches stderr is worth
+      // persisting at info level; debug-mode adds the core's trace-level noise too.
+      const text = chunk.trim();
+      if (text.length > 0) logger.info(`[noxara-core] ${text}`);
     });
 
     this.proc.on("exit", (code) => {
-      console.warn(`[noxara-core] exited with code ${code}`);
+      logger.warn(`[noxara-core] exited with code ${code}`);
       for (const [, pending] of this.pending) {
         pending.settled = true;
         pending.reject(coreError("process_exited", "noxara-core process exited unexpectedly"));
@@ -94,7 +103,7 @@ export class CoreBridge extends EventEmitter {
     // Guard against a malformed/hostile core emitting an endless line with no newline:
     // reset the buffer (dropping the partial line) instead of letting it grow forever.
     if (this.buffer.length > MAX_BUFFER_BYTES) {
-      console.warn("[noxara-core] stdout buffer exceeded the size cap; discarding partial line");
+      logger.warn("[noxara-core] stdout buffer exceeded the size cap; discarding partial line");
       this.buffer = "";
       return;
     }
@@ -112,7 +121,7 @@ export class CoreBridge extends EventEmitter {
     try {
       parsed = JSON.parse(line);
     } catch {
-      console.warn("[noxara-core] unparsable line:", line);
+      logger.warn("[noxara-core] unparsable line", { line: line.slice(0, 500) });
       return;
     }
 
@@ -128,7 +137,7 @@ export class CoreBridge extends EventEmitter {
     if (!pending) {
       // The caller already gave up (e.g. timed out while the Rust task was still
       // processing). Not an error — the request genuinely completed, just late.
-      console.warn(`[noxara-core] late response for ${id} after it was abandoned`);
+      logger.warn("[noxara-core] late response after it was abandoned", { id });
       return;
     }
     this.pending.delete(id);
@@ -136,7 +145,7 @@ export class CoreBridge extends EventEmitter {
     if (pending.settled) {
       // The promise rejected at its timeout while the Rust task was still working;
       // the response has now arrived but nothing is listening. Dispose and move on.
-      console.warn(`[noxara-core] late response for ${id} after it was abandoned`);
+      logger.warn("[noxara-core] late response after it was abandoned", { id });
       return;
     }
 
