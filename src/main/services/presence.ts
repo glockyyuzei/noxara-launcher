@@ -3,7 +3,7 @@
  * activity shown on Discord. This is the ONLY module that decides what presence to
  * push — the renderer never talks to Discord directly.
  *
- * The lifecycle is the single source of truth, exactly like the rocket animation:
+ * The lifecycle is the single source of truth:
  *   Noxara starts            -> launcher presence
  *   user launches an instance -> "Launching Minecraft"
  *   core reports game.started -> "Playing Minecraft" (elapsed timer from that moment)

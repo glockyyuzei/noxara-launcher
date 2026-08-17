@@ -5,7 +5,6 @@ import { Sidebar } from "./layouts/Sidebar";
 import { ToastContainer } from "./components/ToastContainer";
 import { ActivityOverlay } from "./components/ActivityOverlay";
 import { CommandPalette } from "./components/CommandPalette";
-import { LaunchOverlay } from "./components/LaunchOverlay";
 import { useLaunchStore } from "./stores/useLaunchStore";
 import { useAccountStore } from "./stores/useAccountStore";
 import { useActivityStore } from "./stores/useActivityStore";
@@ -148,7 +147,6 @@ export default function App() {
         </main>
       </div>
       <ActivityOverlay />
-      <LaunchOverlay />
       <ToastContainer />
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
     </div>
