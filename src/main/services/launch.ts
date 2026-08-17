@@ -22,6 +22,7 @@ import { installForge } from "./forge";
 import { installNeoForge } from "./neoforge";
 import { listInstances } from "./instances";
 import { startActivity, updateActivity, progressActivity, succeedActivity, failActivity } from "./activity";
+import { presence, extractServerAddress } from "./presence";
 import { logger } from "./logger";
 
 /** Maps an instance id to the activity that represents its launch, so game.started
@@ -51,6 +52,7 @@ export function takeUserStopped(instanceId: string): boolean {
 }
 
 coreBridge.on("game.started", (p: { instanceId: string }) => {
+  presence.onGameStarted(p.instanceId);
   const activityId = launchActivityByInstance.get(p.instanceId);
   if (activityId) {
     succeedActivity(activityId, { description: "Game started" });
@@ -63,6 +65,7 @@ coreBridge.on("game.started", (p: { instanceId: string }) => {
 // Without this, an orphaned "launching" activity would keep the instance looking busy
 // forever even though the process is gone.
 coreBridge.on("game.exit", (p: { instanceId: string; code: number | null; crashed: boolean }) => {
+  presence.onGameExited(p.instanceId);
   const activityId = launchActivityByInstance.get(p.instanceId);
   if (!activityId) return;
   launchActivityByInstance.delete(p.instanceId);
@@ -139,6 +142,16 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
       }
     | undefined;
   if (!instance) throw new Error(`instance ${instanceId} not found`);
+
+  // Rich Presence: show "Launching Minecraft" for the whole (possibly long) pipeline —
+  // downloads, loader installs, Java resolution. game.started/game.exit switch it to
+  // gameplay / launcher presence via the handlers above.
+  presence.onLaunchStart(instanceId, {
+    instanceName: instance.name,
+    minecraftVersion: instance.minecraft_version,
+    loader: instance.loader,
+    server: extractServerAddress(extraGameArgs),
+  });
 
   // The launch activity doubles as the taskId for the file downloads, so the batch
   // progress events update this same record. Cancelling it aborts the in-flight
@@ -318,6 +331,7 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     });
     return result;
   } catch (err) {
+    presence.onLaunchFailed(instanceId);
     if (!isCancelledError(err)) {
       failActivity(activityId, err instanceof Error ? err.message : "Launch failed");
     }

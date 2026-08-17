@@ -1,16 +1,29 @@
 # Noxara Launcher
 
-A minimalist, monochrome Minecraft launcher by Glocky Yuzei. Electron + React + TypeScript +
+A minimalist, monochrome Minecraft launcher by **Glocky Yuzei**. Electron + React + TypeScript +
 Tailwind renderer, talking over a secure typed IPC bridge to a privileged Electron main
 process, which drives a Rust native core (`noxara-core`) for all Minecraft-specific work
 (version resolution, Java detection/installation, downloading, and launching).
 
+Licensed under the MIT License — see [LICENSE](LICENSE).
+
+## Overview
+
+Noxara is a full-featured Minecraft launcher built around real, working flows — there are no
+mockups or fake "coming soon" placeholders. It manages instances, mods, modpacks, resource
+packs, shaders, servers, and Microsoft accounts, installs its own Java runtime, diagnoses
+crashes, and even shows what you're playing on your Discord profile.
+
+Three processes cooperate:
+
+1. **Renderer** (React, sandboxed) — the UI, speaking only through `window.noxara`
+2. **Main** (Electron, privileged) — IPC handlers, settings, auth, filesystem, Discord presence
+3. **`noxara-core`** (Rust) — Mojang metadata, Java detection/install, downloads, and JVM
+   spawning, spoken over line-delimited JSON-RPC on stdio
+
 ## Features
 
-Everything below is real — there are no mockups or fake "coming soon" placeholders in the
-working flows.
-
-**Instances**
+### Instances
 
 - Create instances for **Vanilla, Fabric, Forge, NeoForge, and Quilt** with isolated
   directories (mods, configs, saves, screenshots live per-instance); all loader builds
@@ -29,7 +42,15 @@ working flows.
 - Every instance shows its real lifecycle state (Launching → Running → Stopping →
   Crashed) everywhere it appears
 
-**Content**
+### Launch experience
+
+- **Rocket launch animation**: when you hit Launch, the screen blurs and a monochrome
+  rocket ignites, rumbles on the pad, and lifts off the moment Minecraft actually starts —
+  it's driven by the real instance lifecycle, never a fake timer, and respects
+  reduced-motion settings
+- Launch in singleplayer or straight onto a server from the server list
+
+### Content
 
 - **Mods**: search & install from Modrinth with version/dependency resolution, update
   checks, and uninstall
@@ -38,7 +59,7 @@ working flows.
 - **Resource Packs** and **Shaders**: browse, install, enable/disable per instance
 - Per-mod dependency resolution (required/optional/incompatible)
 
-**Accounts**
+### Accounts
 
 - **Microsoft**: full OAuth 2.0 **device-code** flow → Xbox Live → XSTS → Minecraft
   Services, with refresh-token rotation persisted in the OS credential store. No
@@ -46,7 +67,7 @@ working flows.
 - **Offline** profiles with vanilla-compatible offline UUID derivation
 - Account avatars embedded from the real skin; profile refresh
 
-**Skins**
+### Skins
 
 - Local skin library (64×64 and legacy 64×32 PNG uploads, classic/slim model detection,
   rename/delete)
@@ -57,7 +78,7 @@ working flows.
   vanilla Minecraft and any other launcher, not just Noxara
 - Offline accounts carry their selected skin into the instance on every launch
 
-**Java**
+### Java
 
 - Automatic detection across PATH, common install locations, and managed directories
 - **Automatic Java installation**: if no compatible Java exists, Noxara downloads
@@ -65,21 +86,64 @@ working flows.
   setup required. The Java manager also offers one-click installs of Java 8/17/21
 - Custom per-instance or default Java path, verified by probing the binary
 
-**Multiplayer**
+### Multiplayer
 
 - Server list with icons, favorites, per-instance scoping, and live Minecraft
   Server List Ping (latency, version, player count, MOTD, favicon)
 
-**General**
+### General
 
 - Global **Downloads/Activity manager**: real progress, cancel/retry, clearable history —
   launches, loader installs, repairs, and Java runtime downloads are also cancellable
 - First-class settings: game directory, memory per instance, window size, close-on-
   launch behavior, concurrent download limit, download retries + per-request timeout,
   **start on boot, minimize to tray, close-with-running-instances confirmation**,
-  **UI scale / compact mode / animations**, debug logging, open-data-directory
+  **UI scale / compact mode / animations**, **Discord Rich Presence**, debug logging,
+  open-data-directory
 - **Global search (Ctrl+K)**: jump to pages, instances, accounts, and servers
 - SQLite persistence with a real migration runner
+
+## Supported Minecraft Versions
+
+All official **release** and **snapshot** versions from the live Mojang version manifest.
+There is no hardcoded version list — the launcher reads the manifest on demand and caches
+it, so new Minecraft versions are supported automatically once Mojang publishes them.
+
+## Mod Loaders
+
+| Loader   | Supported | Install source        |
+| -------- | --------- | --------------------- |
+| Vanilla  | ✓         | Mojang manifest       |
+| Fabric   | ✓         | Fabric meta           |
+| Forge    | ✓         | Forge maven           |
+| NeoForge | ✓         | NeoForge maven        |
+| Quilt    | ✓         | Quilt meta            |
+
+Loader builds are fetched from the live registries, with a Retry action on version-load
+failures. Mods, modpacks, resource packs, and shaders come from the Modrinth API.
+
+## Discord Rich Presence
+
+When Discord is running, Noxara can show what you're doing on your profile:
+
+- **Idle in the launcher** → "Managing Minecraft instances · Minecraft Launcher"
+- **Launching a game** → "Launching Minecraft · <instance name>"
+- **In a singleplayer world** → "Playing Minecraft · Singleplayer" (with a session timer
+  that starts when the JVM actually comes up)
+- **Joined a server from the server list** → "Playing Minecraft · Playing on
+  <server address>"
+
+Toggle it any time in **Settings → Discord** (on by default). It's best-effort and silent —
+if Discord isn't running or the connection drops, Noxara just keeps going. When several
+instances run at once, the most recently started one is shown.
+
+To enable it you need a Discord **application** with its **application ID**:
+
+1. Create an application at <https://discord.com/developers/applications>
+2. Under **Rich Presence → Art Assets**, upload an asset named `noxara_logo` (used as the
+   large image)
+3. Set the application ID as the `NOXARA_DISCORD_APP_ID` environment variable (see
+   [Setup](#setup))
 
 ## Requirements
 
@@ -109,10 +173,28 @@ Native modules (`better-sqlite3`, `keytar`) compile against your system Node dur
 
 ## Setup
 
+Copy `.env.example` to `.env` and fill in the values you need:
+
+```bash
+cp .env.example .env
+```
+
+Then:
+
 ```bash
 npm install
 npm run build:rust      # builds native/rust/target/release/noxara-core
 ```
+
+Environment variables:
+
+| Variable                  | Purpose                                             |
+| ------------------------- | --------------------------------------------------- |
+| `NOXARA_MSA_CLIENT_ID`    | Azure AD application ID enabling Microsoft sign-in  |
+| `NOXARA_DISCORD_APP_ID`   | Discord application ID enabling Rich Presence       |
+| `NOXARA_LOG=debug`        | Optional; writes debug lines to the main log        |
+
+`.env` is gitignored — never commit real credentials.
 
 ## Run in development
 
@@ -135,17 +217,52 @@ npm run package:win      # or package:mac / package:linux
 
 Packaged binaries land in `release/`.
 
-## Project layout
+## Tests
+
+```bash
+npm run typecheck        # TypeScript strict, both processes
+npm test                 # vitest unit tests
+cargo test --manifest-path native/rust/Cargo.toml
+```
+
+## Project structure
 
 ```
-src/main/        Electron main process (privileged): IPC handlers, services, auth, filesystem
-src/renderer/     React UI (sandboxed, no Node access — talks only through window.noxara)
-src/shared/       Types shared between main and renderer (the IPC contract)
-native/rust/      noxara-core: Mojang metadata, Java detection + runtime install, downloads,
-                  launch, spoken over line-delimited JSON-RPC on stdio
-                  (see native/rust/src/protocol.rs)
-database/migrations/  Versioned SQL migrations, applied automatically on startup
+src/main/                 Electron main process (privileged): IPC handlers, services, auth,
+                          filesystem, Discord Rich Presence (services/discord-rpc.ts,
+                          services/presence.ts)
+src/renderer/             React UI (sandboxed, no Node access — talks only through window.noxara)
+                          — includes the rocket launch overlay (components/LaunchOverlay.tsx,
+                          lib/launchRocket.ts)
+src/shared/               Types shared between main and renderer (the IPC contract)
+native/rust/              noxara-core: Mojang metadata, Java detection + runtime install,
+                          downloads, launch, spoken over line-delimited JSON-RPC on stdio
+                          (see native/rust/src/protocol.rs)
+database/migrations/      Versioned SQL migrations, applied automatically on startup
 ```
+
+## Architecture
+
+```
+┌──────────────┐   window.noxara (typed IPC)   ┌────────────────────┐
+│  Renderer    │ ─────────────────────────────▶ │  Electron main     │
+│  React UI    │ ◀───────────────────────────── │  (privileged)      │
+└──────────────┘                                └────────┬───────────┘
+                                                         │ JSON-RPC over stdio
+                                                         ▼
+                                              ┌────────────────────┐
+                                              │  noxara-core (Rust)│
+                                              │  downloads/launch  │
+                                              └────────────────────┘
+```
+
+- The renderer is sandboxed (`contextIsolation: true`, `nodeIntegration: false`) and can
+  only reach main-process functionality through the narrow API in `src/main/preload.ts`.
+- The **single source of truth** for a running game is the real lifecycle: the renderer's
+  launch store and the rocket overlay are both driven by core events
+  (`game.started`, `game.output`, `game.exit`), never by fake timers — a timer only runs the
+  rocket's *presentation* (ignition, lift-off, fade), so the animation can never claim a
+  game is running when it isn't.
 
 ## Security notes
 
@@ -158,3 +275,17 @@ database/migrations/  Versioned SQL migrations, applied automatically on startup
   — arguments are passed as an array, never interpolated into a shell string.
 - Every file write, extraction, and deletion derived from user/network input is constrained
   with `assertWithin` / `enclosed_name()` to block path traversal.
+
+## Contributing
+
+Found a bug or want a feature? Open an issue or a pull request. Please keep changes
+focused, add tests where reasonable, and make sure `npm run typecheck`, `npm test`, and
+`cargo test` pass before submitting.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+## Author
+
+**Glocky Yuzei**

@@ -651,6 +651,12 @@ export interface LauncherSettings {
   /** Ask for confirmation before closing the window while instances are running. */
   confirmBeforeCloseRunningInstances: boolean;
 
+  /* Integrations */
+  /** Discord Rich Presence. When on, Noxara shows your current activity (launcher
+   * idle, launching, or playing Minecraft) on your Discord profile. Discord IPC is
+   * best-effort and never blocks or crashes the launcher. */
+  discordRpc: boolean;
+
   /* Appearance */
   /** Root font-size multiplier (0.9 / 1 / 1.1 / 1.25). Applied as a CSS scale. */
   uiScale: number;

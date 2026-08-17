@@ -37,7 +37,7 @@ import {
 } from "../services/activity";
 import { checkInstanceHealth, repairInstance } from "../services/health";
 import { getModDependencies } from "../services/mods";
-import { applyStartOnBoot, applyTrayPreference } from "../app-settings";
+import { applyStartOnBoot, applyTrayPreference, applyDiscordPresence } from "../app-settings";
 import { logger } from "../services/logger";
 import type {
   ContentCategory,
@@ -308,6 +308,7 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
       // Re-apply app-level effects the moment a preference changes (no restart needed).
       applyStartOnBoot();
       applyTrayPreference(getWindow);
+      applyDiscordPresence();
       return updated;
     })
   );

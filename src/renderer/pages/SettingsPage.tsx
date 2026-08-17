@@ -11,6 +11,7 @@ import {
   Wrench,
   UserRound,
   ArrowRight,
+  MessagesSquare,
 } from "lucide-react";
 import type { LauncherSettings } from "@shared/types/ipc";
 import { PageHeader } from "../components/PageHeader";
@@ -133,6 +134,7 @@ export default function SettingsPage() {
       startOnBoot: false,
       minimizeToTray: false,
       confirmBeforeCloseRunningInstances: true,
+      discordRpc: true,
       uiScale: 1,
       compactMode: false,
       uiAnimations: true,
@@ -191,6 +193,19 @@ export default function SettingsPage() {
             onChange={(v) => set("confirmBeforeCloseRunningInstances", v)}
             label="Confirm before closing with instances running"
           />
+        </Row>
+      </div>
+
+      <div className="yz-card px-5 py-2 mt-4">
+        <div className="flex items-center gap-2 py-3">
+          <MessagesSquare size={15} className="text-noxara-subtle" />
+          <h2 className="text-sm font-semibold text-noxara-text">Discord</h2>
+        </div>
+        <Row
+          title="Discord Rich Presence"
+          description="Show what you're doing on your Discord profile — the launcher while idle, and your current game while playing Minecraft. Applies immediately after saving."
+        >
+          <Toggle checked={draft.discordRpc} onChange={(v) => set("discordRpc", v)} label="Discord Rich Presence" />
         </Row>
       </div>
 

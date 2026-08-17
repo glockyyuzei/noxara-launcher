@@ -9,6 +9,7 @@ import path from "node:path";
 import { app, BrowserWindow, Tray, Menu, dialog, nativeImage } from "electron";
 import { getSettings } from "./services/settings";
 import { coreBridge } from "./services/core-bridge";
+import { presence } from "./services/presence";
 
 let tray: Tray | null = null;
 let forceClose = false;
@@ -36,6 +37,16 @@ export function applyStartOnBoot(): void {
   const s = getSettings();
   if (process.platform === "win32" || process.platform === "darwin") {
     app.setLoginItemSettings({ openAtLogin: s.startOnBoot });
+  }
+}
+
+/** Connects/disconnects Discord Rich Presence based on the `discordRpc` setting.
+ * Reapplied at startup and whenever the setting changes (see the settings IPC handler). */
+export function applyDiscordPresence(): void {
+  if (getSettings().discordRpc) {
+    presence.start();
+  } else {
+    presence.stop();
   }
 }
 

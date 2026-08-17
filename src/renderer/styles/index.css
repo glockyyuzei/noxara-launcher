@@ -201,3 +201,249 @@
   animation: none !important;
   transition: none !important;
 }
+
+/* -------------------------------------------------------------------------- */
+/* Minecraft launch rocket overlay                                             */
+/* -------------------------------------------------------------------------- */
+/* Full-screen layer: blurs + dims the launcher behind the rocket. The overlay is
+   driven by the real instance lifecycle (see components/LaunchOverlay.tsx), never by
+   a fake launch timer. `prefers-reduced-motion` / the UI-animations-off class collapse
+   the animation to an instant fade, so the overlay still appears and disappears. */
+
+.noxara-launch-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 10, 10, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 1;
+  transition: opacity 400ms ease;
+}
+
+.noxara-launch-overlay.noxara-launch-fade {
+  opacity: 0;
+}
+
+.noxara-launch-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 30px;
+  transform: translateY(-4vh);
+}
+
+/* The rocket group (SVG + flame + particles + trail). Translates up on exit. */
+.noxara-launch-rocket {
+  position: relative;
+  width: 96px;
+  height: 176px;
+  will-change: transform, opacity, filter;
+  transform-origin: 50% 100%;
+  transition: transform 1s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.45s ease 0.55s,
+    filter 0.85s ease;
+}
+
+/* Idle engine vibration while burning on the pad. */
+.noxara-launch-overlay.noxara-launch-ignition .noxara-launch-rocket,
+.noxara-launch-overlay.noxara-launch-hold .noxara-launch-rocket {
+  animation: noxara-rattle 0.16s linear infinite;
+}
+
+/* Minecraft reached running: accelerate upward and off-screen with motion blur. */
+.noxara-launch-overlay.noxara-launch-exit .noxara-launch-rocket {
+  transform: translateY(-72vh) scale(0.72);
+  opacity: 0;
+  filter: blur(3px);
+}
+
+.noxara-launch-overlay.noxara-launch-exit .noxara-launch-label {
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+/* Vertical streak left behind the rocket during the exit sweep. */
+.noxara-launch-trail {
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 18px;
+  height: 120px;
+  transform: translateX(-50%);
+  background: linear-gradient(to bottom, rgba(232, 232, 232, 0.5), rgba(232, 232, 232, 0));
+  filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.noxara-launch-overlay.noxara-launch-exit .noxara-launch-trail {
+  animation: noxara-trail 1s ease-out forwards;
+}
+
+/* Engine exhaust: outer flame + brighter core, flickering during hold/exit. */
+.noxara-launch-flame {
+  position: absolute;
+  left: 50%;
+  bottom: -42px;
+  width: 28px;
+  height: 46px;
+  transform: translateX(-50%);
+  transform-origin: 50% 0%;
+  opacity: 0;
+  background: linear-gradient(to bottom, #ffffff 0%, #e8e8e8 60%, rgba(232, 232, 232, 0) 100%);
+  border-radius: 50% 50% 50% 50% / 25% 25% 75% 75%;
+  filter: blur(0.5px);
+  pointer-events: none;
+}
+
+.noxara-launch-flame-core {
+  position: absolute;
+  left: 50%;
+  bottom: -32px;
+  width: 11px;
+  height: 24px;
+  transform: translateX(-50%);
+  transform-origin: 50% 0%;
+  opacity: 0;
+  background: #ffffff;
+  border-radius: 50% 50% 50% 50% / 30% 30% 70% 70%;
+  filter: blur(0.3px);
+  pointer-events: none;
+}
+
+.noxara-launch-overlay.noxara-launch-ignition .noxara-launch-flame,
+.noxara-launch-overlay.noxara-launch-ignition .noxara-launch-flame-core {
+  animation: noxara-ignite 0.55s ease-out forwards;
+}
+
+.noxara-launch-overlay.noxara-launch-hold .noxara-launch-flame,
+.noxara-launch-overlay.noxara-launch-exit .noxara-launch-flame {
+  animation: noxara-flame 0.16s ease-in-out infinite alternate;
+}
+
+.noxara-launch-overlay.noxara-launch-hold .noxara-launch-flame-core,
+.noxara-launch-overlay.noxara-launch-exit .noxara-launch-flame-core {
+  animation: noxara-flame 0.14s ease-in-out infinite alternate-reverse;
+}
+
+/* Exhaust particles drifting down + fading out. */
+.noxara-launch-particle {
+  position: absolute;
+  bottom: -36px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #d9d9d9;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.noxara-launch-overlay.noxara-launch-ignition .noxara-launch-particle,
+.noxara-launch-overlay.noxara-launch-hold .noxara-launch-particle,
+.noxara-launch-overlay.noxara-launch-exit .noxara-launch-particle {
+  animation: noxara-particle 0.7s ease-in infinite;
+}
+
+.noxara-launch-overlay.noxara-launch-exit .noxara-launch-particle {
+  animation-duration: 0.45s;
+}
+
+/* Status label under the rocket (real launch activity description). */
+.noxara-launch-label {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  text-align: center;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.noxara-launch-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: #e8e8e8;
+}
+
+.noxara-launch-status {
+  font-size: 12px;
+  color: #9c9c9c;
+}
+
+@keyframes noxara-rattle {
+  0% {
+    transform: translateY(0);
+  }
+  25% {
+    transform: translateY(1px);
+  }
+  75% {
+    transform: translateY(-1px);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+@keyframes noxara-ignite {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) scaleY(0.2);
+  }
+  60% {
+    opacity: 1;
+    transform: translateX(-50%) scaleY(1.18);
+  }
+  100% {
+    opacity: 0.95;
+    transform: translateX(-50%) scaleY(1);
+  }
+}
+
+@keyframes noxara-flame {
+  from {
+    transform: translateX(-50%) scaleY(1);
+    opacity: 0.85;
+  }
+  to {
+    transform: translateX(-50%) scaleY(1.22);
+    opacity: 1;
+  }
+}
+
+@keyframes noxara-particle {
+  0% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate(var(--px, 0px), 28px) scale(0.3);
+    opacity: 0;
+  }
+}
+
+@keyframes noxara-trail {
+  0% {
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.55;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The overlay itself must still appear/disappear; just skip the fancy motion. */
+  .noxara-launch-overlay {
+    transition: opacity 120ms ease;
+  }
+  .noxara-launch-overlay.noxara-launch-exit .noxara-launch-rocket {
+    transition: none;
+    opacity: 0;
+  }
+}

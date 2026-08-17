@@ -8,6 +8,7 @@ import { getSettings } from "./services/settings";
 import { logger } from "./services/logger";
 import {
   applyDebugLogLevel,
+  applyDiscordPresence,
   applyStartOnBoot,
   applyTrayPreference,
   installWindowBehavior,
@@ -79,6 +80,9 @@ if (!gotLock) {
     installWindowBehavior(() => mainWindow, () => closeOnLaunchPending);
     applyTrayPreference(() => mainWindow);
     applyStartOnBoot();
+    // Discord Rich Presence: launcher activity immediately; game events switch it to
+    // gameplay and back (see presence service + launch.ts). No-op without Discord.
+    applyDiscordPresence();
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

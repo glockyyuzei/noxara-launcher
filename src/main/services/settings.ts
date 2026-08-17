@@ -25,6 +25,7 @@ export const DEFAULT_SETTINGS: LauncherSettings = {
   startOnBoot: false,
   minimizeToTray: false,
   confirmBeforeCloseRunningInstances: true,
+  discordRpc: true,
   uiScale: 1,
   compactMode: false,
   uiAnimations: true,
@@ -62,6 +63,7 @@ export function clampSettings(s: Record<string, unknown>): LauncherSettings {
       typeof s.confirmBeforeCloseRunningInstances === "boolean"
         ? s.confirmBeforeCloseRunningInstances
         : d.confirmBeforeCloseRunningInstances,
+    discordRpc: typeof s.discordRpc === "boolean" ? s.discordRpc : d.discordRpc,
     uiScale: typeof s.uiScale === "number" && s.uiScale >= 0.7 && s.uiScale <= 1.5 ? s.uiScale : d.uiScale,
     compactMode: typeof s.compactMode === "boolean" ? s.compactMode : d.compactMode,
     uiAnimations: typeof s.uiAnimations === "boolean" ? s.uiAnimations : d.uiAnimations,

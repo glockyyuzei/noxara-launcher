@@ -59,11 +59,19 @@ describe("clampSettings", () => {
       minimizeOnLaunch: 1,
       startOnBoot: "true",
       gameDir: 42,
+      discordRpc: "no",
     });
     expect(out.autoDetectJava).toBe(DEFAULT_SETTINGS.autoDetectJava);
     expect(out.minimizeOnLaunch).toBe(DEFAULT_SETTINGS.minimizeOnLaunch);
     expect(out.startOnBoot).toBe(DEFAULT_SETTINGS.startOnBoot);
     expect(out.gameDir).toBe(DEFAULT_SETTINGS.gameDir);
+    expect(out.discordRpc).toBe(DEFAULT_SETTINGS.discordRpc);
+  });
+
+  it("honours the discordRpc boolean", () => {
+    expect(clampSettings({ discordRpc: false }).discordRpc).toBe(false);
+    expect(clampSettings({ discordRpc: true }).discordRpc).toBe(true);
+    expect(DEFAULT_SETTINGS.discordRpc).toBe(true);
   });
 
   it("rounds fractional numeric settings", () => {

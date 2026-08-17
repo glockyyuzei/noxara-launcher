@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Noxara Launcher native core: Minecraft version resolution, Java detection, downloads, and process launching. Speaks JSON-RPC over stdio to the Electron main process."
 license = "MIT"
+authors = ["Glocky Yuzei"]
 
 [[bin]]
 name = "noxara-core"
