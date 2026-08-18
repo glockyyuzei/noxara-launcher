@@ -31,7 +31,7 @@ const SkinsPage = lazy(() => import("./pages/SkinsPage"));
 
 export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const appendLog = useLaunchStore((s) => s.appendLog);
+  const appendLogs = useLaunchStore((s) => s.appendLogs);
   const markRunning = useLaunchStore((s) => s.markRunning);
   const markCrashed = useLaunchStore((s) => s.markCrashed);
   const refreshRunning = useLaunchStore((s) => s.refreshRunning);
@@ -57,9 +57,18 @@ export default function App() {
 
   useEffect(() => {
     const offStarted = window.noxara.onGameStarted((p) => markRunning(p.instanceId, true));
-    const offOutput = window.noxara.onGameOutput((p) => {
-      appendLog(p);
-      markRunning(p.instanceId, true);
+    const offOutput = window.noxara.onGameOutputBatch((batch) => {
+      // One zustand set per batch (not per line) — see useLaunchStore.appendLogs. The
+      // main process coalesces game.output at a bounded rate precisely so a chatty game
+      // can't push thousands of IPC messages / re-renders per second and freeze the UI.
+      appendLogs(batch);
+      const seen = new Set<string>();
+      for (const p of batch) {
+        if (!seen.has(p.instanceId)) {
+          seen.add(p.instanceId);
+          markRunning(p.instanceId, true);
+        }
+      }
     });
     const offExit = window.noxara.onGameExit((p) => {
       // Read the stop flag BEFORE markRunning clears it: an exit following a user-
@@ -100,7 +109,7 @@ export default function App() {
       clearInterval(pollTimer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [appendLog, markRunning, markCrashed, refreshRunning, applyActivityUpdate, applyActivityRemoved, hydrateActivities]);
+  }, [appendLogs, markRunning, markCrashed, refreshRunning, applyActivityUpdate, applyActivityRemoved, hydrateActivities]);
 
   // Ctrl/Cmd+K opens the global search palette anywhere in the app.
   useEffect(() => {

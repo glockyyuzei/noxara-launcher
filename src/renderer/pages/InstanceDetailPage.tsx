@@ -35,6 +35,7 @@ import { friendlyErrorMessage } from "../lib/coreErrors";
 import { toggleInstanceFavorite } from "../lib/instanceFavorites";
 import { formatBytes } from "../utils/format";
 import { stripAnsi } from "../utils/consoleText";
+import { maxAllowedRamMb } from "../../shared/ram";
 import { toast } from "../stores/useToastStore";
 
 const TABS = ["Overview", "Mods", "Backups", "Console"] as const;
@@ -508,7 +509,7 @@ function MemoryEditor({
     if (!Number.isFinite(nextMax) || nextMax < nextMin) {
       return "Maximum RAM cannot be lower than minimum RAM";
     }
-    if (totalSystemMb !== null && nextMax > totalSystemMb * 0.9) {
+    if (totalSystemMb !== null && nextMax > maxAllowedRamMb(totalSystemMb)) {
       return `Maximum RAM exceeds a safe share of this system's ~${totalSystemMb} MB RAM`;
     }
     return null;

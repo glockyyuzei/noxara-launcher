@@ -38,6 +38,11 @@ interface LaunchState {
   /** Resets every lifecycle flag for an instance (used after a retry or delete). */
   clearLaunchState: (instanceId: string) => void;
   appendLog: (payload: GameOutputPayload) => void;
+  /** Appends a coalesced batch of game console lines in ONE state update. The main
+   * process delivers game output as batches (see handlers.ts), so a log-flooding game
+   * causes one zustand set per flush instead of one per line — without this, a chatty
+   * modpack could push thousands of re-renders a second and freeze the renderer. */
+  appendLogs: (payloads: GameOutputPayload[]) => void;
   /** Appends a launcher-originated line (e.g. a launch failure) to an instance's
    * console so errors the user must debug always appear there. */
   appendSystemLine: (instanceId: string, line: string) => void;
@@ -56,6 +61,26 @@ function toggle(set: Set<string>, value: string, add: boolean): Set<string> {
     next.delete(value);
   }
   return next;
+}
+
+/** Console log cap per instance — the tail is what crash analysis reads, so older
+ * lines are trimmed first. */
+const MAX_LOG_LINES = 2000;
+
+function appendLogsInternal(
+  state: LaunchState,
+  payloads: GameOutputPayload[]
+): { logsByInstance: LaunchState["logsByInstance"] } {
+  const logsByInstance = { ...state.logsByInstance };
+  for (const payload of payloads) {
+    const existing = logsByInstance[payload.instanceId] ?? [];
+    const kept = existing.length >= MAX_LOG_LINES ? existing.slice(-(MAX_LOG_LINES - 1)) : existing;
+    logsByInstance[payload.instanceId] = [
+      ...kept,
+      { line: payload.line, stream: payload.stream, timestamp: Date.now() },
+    ];
+  }
+  return { logsByInstance };
 }
 
 export const useLaunchStore = create<LaunchState>((set) => ({
@@ -127,20 +152,8 @@ export const useLaunchStore = create<LaunchState>((set) => ({
         errorsByInstance,
       };
     }),
-  appendLog: (payload) =>
-    set((state) => {
-      const existing = state.logsByInstance[payload.instanceId] ?? [];
-      const trimmed = existing.length > 2000 ? existing.slice(-2000) : existing;
-      return {
-        logsByInstance: {
-          ...state.logsByInstance,
-          [payload.instanceId]: [
-            ...trimmed,
-            { line: payload.line, stream: payload.stream, timestamp: Date.now() },
-          ],
-        },
-      };
-    }),
+  appendLog: (payload) => set((state) => appendLogsInternal(state, [payload])),
+  appendLogs: (payloads) => set((state) => appendLogsInternal(state, payloads)),
   appendSystemLine: (instanceId, line) =>
     set((state) => {
       const existing = state.logsByInstance[instanceId] ?? [];

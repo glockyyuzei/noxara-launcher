@@ -358,80 +358,16 @@ function createDefaultTexture(): THREE.Texture {
   return texture;
 }
 
-/** Builds a Steve-like 64x64 skin so the model always has a readable skin even when the
- * account/stored skin is missing or unreadable. */
+/** Builds a fully white 64x64 skin so the model always has a readable (and, per the
+ * product requirement, neutral) placeholder when the account/stored skin is missing or
+ * unreadable. Every pixel is opaque so both the base layer and the second (outer)
+ * layer render as solid white. */
 function makeDefaultSkinCanvas(): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
   canvas.height = 64;
   const ctx = canvas.getContext("2d")!;
-
-  const SKIN = "#c08b6d";
-  const SKIN_DARK = "#a97854";
-  const HAIR = "#3a2b23";
-  const SHIRT = "#4da6ad";
-  const SHIRT_DARK = "#3f8c93";
-  const PANTS = "#3d4765";
-  const PANTS_DARK = "#2e3750";
-  const EYE = "#232a33";
-
-  const fill = (x: number, y: number, w: number, h: number, color: string) => {
-    ctx.fillStyle = color;
-    ctx.fillRect(x, y, w, h);
-  };
-
-  // Head base
-  fill(8, 0, 8, 8, HAIR); // top
-  fill(16, 0, 8, 8, HAIR); // bottom
-  fill(0, 8, 8, 8, SKIN); // right
-  fill(8, 8, 8, 8, SKIN); // front
-  fill(16, 8, 8, 8, SKIN); // left
-  fill(24, 8, 8, 8, HAIR); // back
-  fill(8, 8, 8, 4, HAIR); // hair over front top
-  fill(10, 13, 2, 2, EYE); // left eye
-  fill(14, 13, 2, 2, EYE); // right eye
-
-  // Body
-  fill(16, 20, 4, 12, SHIRT_DARK); // right
-  fill(20, 20, 8, 12, SHIRT); // front
-  fill(28, 20, 4, 12, SHIRT_DARK); // left
-  fill(32, 20, 8, 12, SHIRT_DARK); // back
-  fill(20, 16, 8, 4, SHIRT_DARK); // top
-  fill(28, 16, 8, 4, SHIRT_DARK); // bottom
-
-  // Right arm (skin)
-  fill(36, 20, 4, 12, SKIN); // right
-  fill(40, 20, 8, 12, SKIN); // front
-  fill(48, 20, 8, 12, SKIN); // left
-  fill(56, 20, 8, 12, SKIN_DARK); // back
-  fill(40, 16, 4, 4, SKIN); // top
-  fill(44, 16, 4, 4, SKIN_DARK); // bottom
-
-  // Right leg
-  fill(0, 20, 4, 12, PANTS); // right
-  fill(4, 20, 4, 12, PANTS); // front
-  fill(8, 20, 8, 12, PANTS); // left
-  fill(16, 20, 4, 12, PANTS_DARK); // back
-  fill(4, 16, 4, 4, PANTS_DARK); // top
-  fill(8, 16, 4, 4, PANTS_DARK); // bottom
-  fill(0, 30, 20, 2, PANTS_DARK); // shoes
-
-  // Left arm (modern atlas, rows 48-64)
-  fill(32, 52, 4, 12, SKIN); // right
-  fill(36, 52, 4, 12, SKIN); // front
-  fill(40, 52, 4, 12, SKIN); // left
-  fill(44, 52, 4, 12, SKIN_DARK); // back
-  fill(36, 48, 4, 4, SKIN); // top
-  fill(40, 48, 4, 4, SKIN_DARK); // bottom
-
-  // Left leg (modern atlas, rows 48-64)
-  fill(16, 52, 4, 12, PANTS); // right
-  fill(20, 52, 4, 12, PANTS); // front
-  fill(24, 52, 4, 12, PANTS); // left
-  fill(28, 52, 4, 12, PANTS_DARK); // back
-  fill(20, 48, 4, 4, PANTS_DARK); // top
-  fill(24, 48, 4, 4, PANTS_DARK); // bottom
-  fill(16, 62, 16, 2, PANTS_DARK); // shoes
-
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, 64, 64);
   return canvas;
 }

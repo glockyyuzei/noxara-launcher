@@ -8,10 +8,11 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
@@ -79,6 +80,40 @@ pub struct GameExitEvent {
 pub struct GameStartedEvent {
     pub instance_id: String,
     pub pid: u32,
+}
+
+/// Game output streaming is rate-limited so a log-flooding mod (or a crash loop
+/// spamming stderr) can never saturate the stdio pipe back to the Electron main
+/// process. A full pipe would stall the core's `println!` (blocking a tokio worker
+/// thread), which in turn stops draining the JVM's stdout/stderr, which blocks the
+/// game itself — the classic "random crash/freeze a few minutes after launch" seen
+/// with verbose modpacks. Lines are buffered in a bounded queue and flushed at most
+/// every `GAME_OUTPUT_FLUSH_MS`; if the game outruns the flush rate the oldest
+/// buffered lines are dropped (the newest — the crash tail — are preserved).
+const GAME_OUTPUT_QUEUE_CAP: usize = 5000;
+const GAME_OUTPUT_FLUSH_MS: u64 = 50;
+const GAME_OUTPUT_MAX_PER_FLUSH: usize = 400;
+
+type OutputQueue = Arc<Mutex<VecDeque<GameOutputEvent>>>;
+
+/// Pushes a line onto the shared queue, dropping the oldest line if the queue is full
+/// so memory stays bounded no matter how fast the game writes. Cheap and non-blocking
+/// (a short std Mutex hold), so the JVM's own stdout/stderr pipes are drained eagerly
+/// and the game never stalls on its own logging.
+fn enqueue_output(queue: &OutputQueue, event: GameOutputEvent) {
+    let mut q = queue.lock().unwrap();
+    q.push_back(event);
+    while q.len() > GAME_OUTPUT_QUEUE_CAP {
+        q.pop_front();
+    }
+}
+
+/// Removes up to `limit` lines from the front of the queue (the oldest first) for the
+/// forwarder to emit as `game.output` events.
+fn drain_output(queue: &OutputQueue, limit: usize) -> Vec<GameOutputEvent> {
+    let mut q = queue.lock().unwrap();
+    let take = q.len().min(limit);
+    q.drain(..take).collect()
 }
 
 /// Evaluates a Mojang "rules" array (OS/feature gating on libraries and arguments).
@@ -481,13 +516,20 @@ pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, acc
 
     running_registry().lock().unwrap().insert(instance_id.clone(), child);
 
+    // Both readers push into one shared queue; a single forwarder drains it at a bounded
+    // rate (see GAME_OUTPUT_* constants). Keeps the JVM's pipes drained regardless of
+    // how fast the Electron side consumes the events, and bounds both memory and the
+    // volume of writes to our own stdout.
+    let queue: OutputQueue = Arc::new(Mutex::new(VecDeque::with_capacity(GAME_OUTPUT_QUEUE_CAP)));
+
     let id_out = instance_id.clone();
     let secrets_out = vec![redacted_token.clone()];
+    let q_out = Arc::clone(&queue);
     let out_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            write_event(
-                "game.output",
+            enqueue_output(
+                &q_out,
                 GameOutputEvent {
                     instance_id: id_out.clone(),
                     stream: "stdout".to_string(),
@@ -499,17 +541,38 @@ pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, acc
 
     let id_err = instance_id.clone();
     let secrets_err = vec![redacted_token];
+    let q_err = Arc::clone(&queue);
     let err_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            write_event(
-                "game.output",
+            enqueue_output(
+                &q_err,
                 GameOutputEvent {
                     instance_id: id_err.clone(),
                     stream: "stderr".to_string(),
                     line: redact(&line, &secrets_err),
                 },
             );
+        }
+    });
+
+    let stop_flush = Arc::new(AtomicBool::new(false));
+    let q_flush = Arc::clone(&queue);
+    let stop_flush_task = Arc::clone(&stop_flush);
+    let flush_task = tokio::spawn(async move {
+        loop {
+            if stop_flush_task.load(Ordering::SeqCst) {
+                // Final drain: emit everything still buffered so `game.exit` is always
+                // preceded by the complete log tail (crash analysis reads the tail).
+                for event in drain_output(&q_flush, usize::MAX) {
+                    write_event("game.output", event);
+                }
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(GAME_OUTPUT_FLUSH_MS)).await;
+            for event in drain_output(&q_flush, GAME_OUTPUT_MAX_PER_FLUSH) {
+                write_event("game.output", event);
+            }
         }
     });
 
@@ -527,13 +590,26 @@ pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, acc
                     break None;
                 }
             },
-            // Removed concurrently (shouldn't happen while the waiter owns the id).
+            // The waiter owns this id: `running_instances()` only reports process state
+            // and never removes entries, so the registry entry is always present here
+            // until this waiter removes it below (see the comment on running_instances).
             None => break None,
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     };
-    let _ = out_task.await;
-    let _ = err_task.await;
+
+    // The process has exited. Let the readers finish (they flush remaining lines into
+    // the queue), then the forwarder emits the final drain, then game.exit. Every await
+    // is bounded: a grandchild that inherited the pipes can keep them open indefinitely,
+    // and without a timeout game.exit would never be emitted — leaving the launcher
+    // stuck on "running", leaking the activity/presence session and the close-on-launch
+    // quit. Lines still buffered when the timeout fires are dropped; game.exit still
+    // fires on time.
+    let drain_timeout = Duration::from_secs(5);
+    let _ = tokio::time::timeout(drain_timeout, out_task).await;
+    let _ = tokio::time::timeout(drain_timeout, err_task).await;
+    stop_flush.store(true, Ordering::SeqCst);
+    let _ = tokio::time::timeout(drain_timeout, flush_task).await;
     running_registry().lock().unwrap().remove(&instance_id);
 
     // A crash is inferred, never asserted with false certainty (spec section 41):
@@ -552,19 +628,25 @@ pub async fn launch_and_stream(instance: &LaunchInstance, args: Vec<String>, acc
 
 /// Returns the instance ids whose tracked Minecraft JVM is still alive (based on
 /// `try_wait`, i.e. the real OS process state — not anything the launcher UI assumes).
+///
+/// IMPORTANT: this only *reports*; it never removes entries from the registry. Removing
+/// an exited child here raced with `launch_and_stream`'s waiter (which reaps the exit
+/// status via `get_mut`): if this poll observed the exit first, the waiter found no
+/// entry and reported `code: None`, turning a normal exit into a false `crashed: true`
+/// banner. Only the waiter — after it has observed the exit — removes the entry, so the
+/// true exit code is always reported.
 pub fn running_instances() -> Vec<String> {
     let mut reg = running_registry().lock().unwrap();
     let mut running = Vec::new();
-    reg.retain(|id, child| {
+    for (id, child) in reg.iter_mut() {
         let alive = match child.try_wait() {
-            Ok(Some(_)) => false, // exited already — drop from the registry
+            Ok(Some(_)) => false, // exited — report as not running, but leave the entry
             _ => true,            // still running (or wait error — treat as running)
         };
         if alive {
             running.push(id.clone());
         }
-        alive
-    });
+    }
     running
 }
 

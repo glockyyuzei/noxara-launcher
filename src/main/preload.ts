@@ -171,6 +171,11 @@ const api = {
     ipcRenderer.on(IPC_CHANNELS.eventGameOutput, listener);
     return () => ipcRenderer.removeListener(IPC_CHANNELS.eventGameOutput, listener);
   },
+  onGameOutputBatch: (cb: (payloads: GameOutputPayload[]) => void) => {
+    const listener = (_e: unknown, payloads: GameOutputPayload[]) => cb(payloads);
+    ipcRenderer.on(IPC_CHANNELS.eventGameOutputBatch, listener);
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.eventGameOutputBatch, listener);
+  },
   onGameStarted: (cb: (payload: GameStartedPayload) => void) => {
     const listener = (_e: unknown, payload: GameStartedPayload) => cb(payload);
     ipcRenderer.on(IPC_CHANNELS.eventGameStarted, listener);

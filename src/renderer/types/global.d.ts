@@ -134,6 +134,7 @@ declare global {
       onDownloadProgress(cb: (p: DownloadProgressPayload) => void): () => void;
       onDownloadComplete(cb: (p: DownloadCompletePayload) => void): () => void;
       onGameOutput(cb: (p: GameOutputPayload) => void): () => void;
+      onGameOutputBatch(cb: (p: GameOutputPayload[]) => void): () => void;
       onGameStarted(cb: (p: GameStartedPayload) => void): () => void;
       onGameExit(cb: (p: GameExitPayload) => void): () => void;
       onModDownloadProgress(cb: (p: ModDownloadProgressPayload) => void): () => void;

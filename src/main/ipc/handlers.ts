@@ -41,6 +41,7 @@ import { applyStartOnBoot, applyTrayPreference, applyDiscordPresence } from "../
 import { logger } from "../services/logger";
 import type {
   ContentCategory,
+  GameOutputPayload,
   LauncherSettings,
   ModLoader,
   ModSearchQuery,
@@ -388,13 +389,44 @@ export function registerIpcHandlers(getWindow: () => BrowserWindow | null): void
   coreBridge.on("download.progress", forward(IPC_CHANNELS.eventDownloadProgress));
   coreBridge.on("download.complete", forward(IPC_CHANNELS.eventDownloadComplete));
   coreBridge.on("game.started", forward(IPC_CHANNELS.eventGameStarted));
-  coreBridge.on("game.output", forward(IPC_CHANNELS.eventGameOutput));
+
+  // Coalesce game console output so a log-flooding game can't saturate IPC and the
+  // renderer with one message per line (a real cause of freezes/crashes a few minutes
+  // into a verbose modpack session — combined with the core-side rate limit in
+  // launch.rs). Lines are buffered and delivered as a single batch at most every
+  // GAME_OUTPUT_FLUSH_MS, or immediately when the batch cap is hit. The batch is
+  // flushed synchronously inside the game.exit handler so the console always shows the
+  // complete log tail before the exit/crash state lands.
+  const GAME_OUTPUT_FLUSH_MS = 100;
+  const GAME_OUTPUT_MAX_BATCH = 500;
+  const pendingGameOutput: GameOutputPayload[] = [];
+  let gameOutputFlushTimer: NodeJS.Timeout | null = null;
+  const flushGameOutput = () => {
+    gameOutputFlushTimer = null;
+    if (pendingGameOutput.length === 0) return;
+    const batch = pendingGameOutput.splice(0, pendingGameOutput.length);
+    getWindow()?.webContents.send(IPC_CHANNELS.eventGameOutputBatch, batch);
+  };
+  coreBridge.on("game.output", (payload: GameOutputPayload) => {
+    pendingGameOutput.push(payload);
+    if (pendingGameOutput.length >= GAME_OUTPUT_MAX_BATCH) {
+      flushGameOutput();
+      return;
+    }
+    if (gameOutputFlushTimer === null) {
+      gameOutputFlushTimer = setTimeout(flushGameOutput, GAME_OUTPUT_FLUSH_MS);
+    }
+  });
+
   // A user-requested stop (launchService.killInstance) makes the core report the
   // process as exited non-zero -> `crashed: true`. Normalize that to a normal exit so
   // the renderer never shows a crash banner for a stop the user initiated. Only a
   // genuinely crashed/launch-failed instance should surface as crashed.
   coreBridge.on("game.exit", (p: { instanceId: string; code: number | null; crashed: boolean }) => {
     const userStopped = launchService.takeUserStopped(p.instanceId);
+    // Flush any buffered console lines BEFORE the exit event so the renderer's crash
+    // diagnosis (which reads the log tail) sees the final output.
+    flushGameOutput();
     getWindow()?.webContents.send(IPC_CHANNELS.eventGameExit, {
       ...p,
       crashed: userStopped ? false : p.crashed,

@@ -126,6 +126,11 @@ export interface GameOutputPayload {
   line: string;
 }
 
+/** A coalesced batch of game console lines delivered in one IPC message. The main
+ * process forwards game.output at a bounded rate (see handlers.ts) so a log-flooding
+ * game can't saturate IPC or the renderer with one message per line. */
+export type GameOutputBatchPayload = GameOutputPayload[];
+
 export interface GameExitPayload {
   instanceId: string;
   code: number | null;
@@ -927,6 +932,7 @@ export const IPC_CHANNELS = {
   eventDownloadProgress: "noxara:event:downloadProgress",
   eventDownloadComplete: "noxara:event:downloadComplete",
   eventGameOutput: "noxara:event:gameOutput",
+  eventGameOutputBatch: "noxara:event:gameOutputBatch",
   eventGameExit: "noxara:event:gameExit",
   eventGameStarted: "noxara:event:gameStarted",
   eventModDownloadProgress: "noxara:event:modDownloadProgress",

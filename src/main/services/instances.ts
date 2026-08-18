@@ -4,6 +4,7 @@ import path from "node:path";
 import { shell } from "electron";
 import { getDb } from "./database";
 import { instanceDir, slugifyInstanceName } from "../filesystem/paths";
+import { maxAllowedRamMb } from "../../shared/ram";
 import { startActivity, updateActivity, succeedActivity, failActivity } from "./activity";
 import type { CreateInstanceInput, InstanceRecord } from "../../shared/types/ipc";
 import { resolveFabricLoaderVersion } from "./fabric";
@@ -84,7 +85,7 @@ function validateCreateInput(input: CreateInstanceInput): void {
     throw new Error("Maximum RAM cannot be lower than minimum RAM");
   }
   const totalSystemMb = Math.round(require("node:os").totalmem() / (1024 * 1024));
-  if (input.maxRamMb > totalSystemMb * 0.9) {
+  if (input.maxRamMb > maxAllowedRamMb(totalSystemMb)) {
     throw new Error(
       `Requested ${input.maxRamMb} MB exceeds a safe share of this system's ${totalSystemMb} MB RAM`
     );
@@ -289,7 +290,7 @@ export function updateInstance(id: string, patch: UpdateInstanceInput): Instance
   if (minRamMb < 512) throw new Error("Minimum RAM must be at least 512 MB");
   if (maxRamMb < minRamMb) throw new Error("Maximum RAM cannot be lower than minimum RAM");
   const totalSystemMb = Math.round(require("node:os").totalmem() / (1024 * 1024));
-  if (maxRamMb > totalSystemMb * 0.9) {
+  if (maxRamMb > maxAllowedRamMb(totalSystemMb)) {
     throw new Error(`Requested ${maxRamMb} MB exceeds a safe share of this system's ${totalSystemMb} MB RAM`);
   }
 
