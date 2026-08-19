@@ -98,8 +98,7 @@
                 "nsis-web",
                 "nsis"
             ],
-            "icon": "assets/icons/icon.ico",
-            "signAndEditExecutable": false
+            "icon": "assets/icons/icon.ico"
         },
         "nsisWeb": {
             "differentialPackage": true,

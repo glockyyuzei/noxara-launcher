@@ -3,10 +3,11 @@
  * named pipe (Windows) or unix socket (macOS/Linux) — no native modules, no network.
  *
  * The Discord *application id* comes from the `NOXARA_DISCORD_APP_ID` environment
- * variable. Application ids are public (never secrets), but keeping it out of the
- * codebase lets every fork use its own Discord application. Without the env var set the
- * client simply stays disconnected and every call is a silent no-op, so Discord can
- * never become a dependency for launching Minecraft.
+ * variable, falling back to the baked-in `DISCORD_APP_ID` constant. Application ids
+ * are public (never secrets); the env var lets every fork override it with its own
+ * Discord application. If no id resolves at all the client simply stays disconnected
+ * and every call is a silent no-op, so Discord can never become a dependency for
+ * launching Minecraft.
  *
  * Protocol (the same one discord-rpc / discord-rich-presence implement):
  *   frame  = u32 LE opcode | u32 LE length | JSON payload
@@ -24,8 +25,9 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { logger } from "./logger";
+import { DISCORD_APP_ID } from "../../shared/constants/discord";
 
-const APP_ID = process.env.NOXARA_DISCORD_APP_ID ?? "";
+const APP_ID = process.env.NOXARA_DISCORD_APP_ID ?? DISCORD_APP_ID;
 
 /** Discord exposes up to 10 pipes; apps already holding a lower one push us higher. */
 const PIPE_LIMIT = 9;

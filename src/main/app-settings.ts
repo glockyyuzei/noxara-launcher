@@ -51,9 +51,10 @@ export function applyDiscordPresence(): void {
 }
 
 function trayIcon(): Electron.NativeImage {
-  const candidates = app.isPackaged
-    ? [path.join(process.resourcesPath, "renderer", "noxara_banner.png")]
-    : [path.join(app.getAppPath(), "src", "renderer", "public", "noxara_banner.png")];
+  const candidates = [
+    path.join(app.getAppPath(), "dist", "renderer", "noxara_banner.png"),
+    path.join(app.getAppPath(), "src", "renderer", "public", "noxara_banner.png"),
+  ];
   for (const candidate of candidates) {
     const img = nativeImage.createFromPath(candidate);
     if (!img.isEmpty()) return img.resize({ width: 16, height: 16 });

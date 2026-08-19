@@ -137,13 +137,11 @@ Toggle it any time in **Settings → Discord** (on by default). It's best-effort
 if Discord isn't running or the connection drops, Noxara just keeps going. When several
 instances run at once, the most recently started one is shown.
 
-To enable it you need a Discord **application** with its **application ID**:
-
-1. Create an application at <https://discord.com/developers/applications>
-2. Under **Rich Presence → Art Assets**, upload an asset named `noxara_logo` (used as the
-   large image)
-3. Set the application ID as the `NOXARA_DISCORD_APP_ID` environment variable (see
-   [Setup](#setup))
+The launcher ships with a Discord application ID baked in, so Rich Presence works out of
+the box in packaged builds (no `.env` needed). Forks can point the app at their own
+Discord application by setting the `NOXARA_DISCORD_APP_ID` environment variable (see
+[Setup](#setup)). The large image uses a Discord asset named `noxara_logo`, which must be
+uploaded for the application under **Rich Presence → Art Assets**.
 
 ## Requirements
 
