@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { PresenceController, extractServerAddress, type PresenceTarget } from "./presence";
+import {
+  PresenceController,
+  extractServerAddress,
+  isServerDisconnect,
+  parseServerConnect,
+  type PresenceTarget,
+} from "./presence";
 import type { DiscordActivity } from "./discord-rpc";
 
 class FakeTarget implements PresenceTarget {
@@ -124,6 +130,51 @@ describe("PresenceController", () => {
     expect(target.last?.details).toBe("Managing Minecraft instances");
   });
 
+  it("switches to the joined server when the game reports a connect", () => {
+    presence.start();
+    presence.onLaunchStart("a", info());
+    presence.onGameStarted("a");
+    expect(target.last?.state).toBe("Singleplayer");
+    presence.onServerConnected("a", "Hypixel");
+    expect(target.last?.state).toBe("Playing on Hypixel");
+  });
+
+  it("accepts a server connect even before game.started lands", () => {
+    presence.start();
+    presence.onServerConnected("a", "Hypixel");
+    presence.onLaunchStart("a", info());
+    presence.onGameStarted("a");
+    expect(target.last?.state).toBe("Playing on Hypixel");
+  });
+
+  it("returns to Singleplayer when the player leaves the server", () => {
+    presence.start();
+    presence.onLaunchStart("a", info());
+    presence.onGameStarted("a");
+    presence.onServerConnected("a", "Hypixel");
+    presence.onServerDisconnected("a");
+    expect(target.last?.state).toBe("Singleplayer");
+  });
+
+  it("masks a launch-time --server when the player disconnects into singleplayer", () => {
+    presence.start();
+    presence.onLaunchStart("a", info({ server: "play.hypixel.net" }));
+    presence.onGameStarted("a");
+    expect(target.last?.state).toBe("Playing on play.hypixel.net");
+    presence.onServerDisconnected("a");
+    expect(target.last?.state).toBe("Singleplayer");
+  });
+
+  it("clears the server override when the game exits", () => {
+    presence.start();
+    presence.onLaunchStart("a", info());
+    presence.onGameStarted("a");
+    presence.onServerConnected("a", "Hypixel");
+    presence.onGameExited("a");
+    presence.onGameStarted("a");
+    expect(target.last?.state).toBe("Singleplayer");
+  });
+
   it("stops pushing activities when disabled", () => {
     presence.start();
     presence.stop();
@@ -163,5 +214,56 @@ describe("extractServerAddress", () => {
 
   it("returns undefined when the address is blank", () => {
     expect(extractServerAddress(["--server", " "])).toBeUndefined();
+  });
+});
+
+describe("parseServerConnect", () => {
+  it("parses the classic comma form (<= 1.19.2)", () => {
+    expect(parseServerConnect("[13:45:06] [Netty Client IO #1/INFO]: Connecting to play.hypixel.net, 25565")).toEqual({
+      address: "play.hypixel.net",
+      port: 25565,
+    });
+  });
+
+  it("parses the colon form (1.19.3+)", () => {
+    expect(parseServerConnect("[13:45:06] [Netty Client IO #1/INFO]: Connecting to mc.example.com:25577")).toEqual({
+      address: "mc.example.com",
+      port: 25577,
+    });
+  });
+
+  it("parses the quoted host form with a default port", () => {
+    expect(parseServerConnect("[13:45:06] [Netty Client IO #0/INFO]: Connecting to host \"play.hypixel.net\"")).toEqual({
+      address: "play.hypixel.net",
+      port: 25565,
+    });
+  });
+
+  it("parses bracketed IPv6 addresses", () => {
+    expect(parseServerConnect("Connecting to host \"[2001:db8::1]:25565\"")).toEqual({
+      address: "2001:db8::1",
+      port: 25565,
+    });
+  });
+
+  it("returns null for non-connecting lines", () => {
+    expect(parseServerConnect("Connected to play.hypixel.net:25565")).toBeNull();
+    expect(parseServerConnect("[Server thread/INFO]: Starting integrated minecraft server version 1.21")).toBeNull();
+    expect(parseServerConnect("")).toBeNull();
+  });
+});
+
+describe("isServerDisconnect", () => {
+  it("detects a dropped connection", () => {
+    expect(isServerDisconnect("[Netty Client IO #1/WARN]: Connection lost, no further messages")).toBe(true);
+  });
+
+  it("detects a singleplayer world load", () => {
+    expect(isServerDisconnect("[Server thread/INFO]: Starting integrated minecraft server version 1.21")).toBe(true);
+  });
+
+  it("ignores ordinary output", () => {
+    expect(isServerDisconnect("[Server thread/INFO]: Done (4.832s)! For help, type \"help\"")).toBe(false);
+    expect(isServerDisconnect("")).toBe(false);
   });
 });

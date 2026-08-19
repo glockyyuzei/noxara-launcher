@@ -113,3 +113,17 @@ export function updateServer(id: string, input: Partial<ServerInput>): ServerRec
 export function removeServer(id: string): void {
   getDb().prepare("DELETE FROM servers WHERE id = ?").run(id);
 }
+
+/** Finds a saved server whose address matches (case-insensitive), preferring an exact
+ * port match and falling back to any address match. Used to turn a raw address seen in
+ * the game log (or a `--server` launch arg) into the friendly name the user saved. */
+export function findServerByAddress(address: string, port?: number): ServerRecord | undefined {
+  const trimmed = address.trim().toLowerCase();
+  if (!trimmed) return undefined;
+  const candidates = listServers().filter((s) => s.address.trim().toLowerCase() === trimmed);
+  if (candidates.length === 0) return undefined;
+  if (port !== undefined) {
+    return candidates.find((s) => s.port === port) ?? candidates[0];
+  }
+  return candidates[0];
+}

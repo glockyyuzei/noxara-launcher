@@ -22,8 +22,15 @@ import { installForge } from "./forge";
 import { installNeoForge } from "./neoforge";
 import { listInstances } from "./instances";
 import { startActivity, updateActivity, progressActivity, succeedActivity, failActivity } from "./activity";
-import { presence, extractServerAddress } from "./presence";
+import {
+  presence,
+  extractServerAddress,
+  parseServerConnect,
+  isServerDisconnect,
+} from "./presence";
+import { findServerByAddress } from "./servers";
 import { logger } from "./logger";
+import type { GameOutputPayload } from "../../shared/types/ipc";
 
 /** Maps an instance id to the activity that represents its launch, so game.started
  * can flip it to Completed exactly when the JVM actually comes up. */
@@ -75,6 +82,37 @@ coreBridge.on("game.exit", (p: { instanceId: string; code: number | null; crashe
     succeedActivity(activityId, { description: "Game exited" });
   }
 });
+
+// Watch the live game console so Rich Presence reflects the server the player is
+// ACTUALLY on — whether they launched from the Servers page, an instance page, or
+// joined from inside the game. Minecraft logs "Connecting to <host>" when it dials a
+// server; a disconnect / singleplayer world load clears it. This makes presence work
+// for every launch path instead of only the `--server` game-arg path (which is set
+// just from the Servers page "Play" button).
+coreBridge.on("game.output", (p: GameOutputPayload) => {
+  const connect = parseServerConnect(p.line);
+  if (connect) {
+    const saved = findServerByAddress(connect.address, connect.port);
+    presence.onServerConnected(p.instanceId, saved?.name ?? connect.address);
+    return;
+  }
+  if (isServerDisconnect(p.line)) {
+    presence.onServerDisconnected(p.instanceId);
+  }
+});
+
+/** Turns a raw `--server <address> [--port <port>]` launch into the friendly saved
+ * server name (falling back to the address) so presence reads "Hypixel", not
+ * "play.hypixel.net". */
+function resolveLaunchServerName(extraGameArgs?: string[]): string | undefined {
+  const address = extractServerAddress(extraGameArgs);
+  if (!address) return undefined;
+  const portIndex = extraGameArgs?.indexOf("--port");
+  const port =
+    portIndex !== undefined && portIndex >= 0 ? Number(extraGameArgs?.[portIndex + 1]) : undefined;
+  const saved = findServerByAddress(address, Number.isInteger(port) && port! > 0 ? port : undefined);
+  return saved?.name ?? address;
+}
 
 async function resolveJavaPath(
   instanceJavaPath: string | null,
@@ -150,7 +188,7 @@ export async function launchInstance(instanceId: string, extraGameArgs?: string[
     instanceName: instance.name,
     minecraftVersion: instance.minecraft_version,
     loader: instance.loader,
-    server: extractServerAddress(extraGameArgs),
+    server: resolveLaunchServerName(extraGameArgs),
   });
 
   // The launch activity doubles as the taskId for the file downloads, so the batch
